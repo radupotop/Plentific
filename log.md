@@ -139,3 +139,62 @@ Deliver a document, likely Markdown or PDF, containing:
 No code is required unless including illustrative snippets such as example JSON requests or Mermaid diagrams.
 
 The answer should optimize for defensible trade-offs. The interviewer is likely looking for whether the candidate understands inventory systems are ledger and audit problems first, CRUD problems second.
+
+## Application-Level Ledger / WAL Clarification
+
+An application-level append-only log is a good fit for stock movement, stock balance reconstruction, auditability, and replay. However, it should not be presented as a replacement for PostgreSQL transactions.
+
+It is better to avoid calling it a "WAL" in the final answer because write-ahead logging has a specific database-internals meaning. Better terms are:
+
+- `stock_movement_ledger`
+- `inventory_ledger`
+- `append-only movement log`
+- `event-sourced stock ledger`
+
+The recommended write path is:
+
+```text
+POST /stock-usages
+  -> transaction starts
+  -> lock affected stock_balance rows
+  -> validate no negative stock beyond tolerance
+  -> append stock_movement + stock_movement_line records
+  -> update stock_balance projection
+  -> append outbox_event
+  -> commit
+```
+
+Example usage movement:
+
+```json
+{
+  "type": "USAGE",
+  "external_ref": "WO-123",
+  "container_id": "VAN-1",
+  "lines": [
+    {
+      "sku_id": "SCREW-001",
+      "quantity_delta": "-3",
+      "unit": "each"
+    }
+  ]
+}
+```
+
+The corresponding `stock_balance` row is the current projection:
+
+```text
+container_id = VAN-1
+sku_id       = SCREW-001
+on_hand      = previous_on_hand - 3
+```
+
+The key invariant is:
+
+> `stock_balance` must always be derivable from the movement ledger.
+
+This gives auditability, replay, stock-at-time-T queries, reconciliation, and recovery from projection corruption. PostgreSQL transactions still protect correctness during each write.
+
+Suggested wording for the final solution:
+
+> I would model inventory mutations as an append-only stock movement ledger. Each receive, usage, transfer, adjustment, stocktake correction, and initial import creates immutable ledger rows. Current balances are maintained as a transactional projection for low-latency reads, but can be rebuilt from the ledger. This gives auditability and replayability without sacrificing PostgreSQL transaction guarantees for concurrent writes.
