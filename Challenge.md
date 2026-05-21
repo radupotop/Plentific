@@ -50,9 +50,9 @@ Candidates should interpret and expand these; this isn't exhaustive.
 Materials usage
 * Operative can add multiple line items to a work order usage record.
 * Quantities must support tracking methods:
-  ○ container-level (e.g. "1 box consumed")
-  ○ unit-level (e.g. "12 screws consumed")
-  ○ continuous (e.g. "2.4 metres consumed", with minimum increments)
+  - container-level (e.g. "1 box consumed")
+  - unit-level (e.g. "12 screws consumed")
+  - continuous (e.g. "2.4 metres consumed", with minimum increments)
 * Must prevent negative stock beyond a defined tolerance (candidate to propose approach and assumptions).
 
 ## Stock levels
