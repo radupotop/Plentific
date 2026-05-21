@@ -198,3 +198,41 @@ This gives auditability, replay, stock-at-time-T queries, reconciliation, and re
 Suggested wording for the final solution:
 
 > I would model inventory mutations as an append-only stock movement ledger. Each receive, usage, transfer, adjustment, stocktake correction, and initial import creates immutable ledger rows. Current balances are maintained as a transactional projection for low-latency reads, but can be rebuilt from the ledger. This gives auditability and replayability without sacrificing PostgreSQL transaction guarantees for concurrent writes.
+
+## Durable Storage vs Queue Events
+
+Stock movement events should be stored permanently in PostgreSQL. They should not only be consumed from a queue.
+
+For this challenge, `stock_movement` and `stock_movement_line` tables are the permanent append-only inventory ledger. They are part of the domain model and audit trail. RabbitMQ, Celery, and SNS are for asynchronous processing and integration, not for authoritative inventory history.
+
+Recommended flow:
+
+```text
+API request
+  -> DB transaction
+      -> insert stock_movement rows permanently
+      -> update stock_balance projection
+      -> insert outbox_event row
+  -> commit
+  -> async worker publishes outbox_event to SNS/RabbitMQ
+  -> consumers build read models / notify other services
+```
+
+Reasons to store movements durably in the database:
+
+- Queues usually have retention limits and operational cleanup.
+- Consumers can fail, retry, duplicate, or process out of order.
+- Audit history is required for stock takes, adjustments, disputes, and reporting.
+- `stock_balance` must be rebuildable if a projection is corrupted.
+- "Stock level at time T" requires durable history.
+- Transactional consistency is needed between the movement and the balance.
+
+Important distinction:
+
+```text
+stock_movement = source of truth
+stock_balance  = current-state projection
+queue event    = integration/delivery mechanism
+```
+
+In the final design, movement rows should be immutable and retained long-term, with possible partitioning or archival later if volume grows.
