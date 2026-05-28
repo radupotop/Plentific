@@ -236,3 +236,20 @@ queue event    = integration/delivery mechanism
 ```
 
 In the final design, movement rows should be immutable and retained long-term, with possible partitioning or archival later if volume grows.
+
+## Deliverable Created
+
+Created `Solution.md` as the written challenge response.
+
+It includes:
+
+- Qualifying questions, assumptions, and risks.
+- Proposed `stock-management` Django/DRF service architecture.
+- Mermaid ERD.
+- Field-level data model descriptions with constraints, indexes, and invariants.
+- Ledger vs persisted balances vs snapshots trade-off.
+- REST API design with request/response examples, validation, idempotency, and error semantics.
+- Day-0 import flow.
+- Migration and rollout plan.
+- Concurrency, scalability, reliability, observability, and permissions considerations.
+- MVP to v2 phase plan.
