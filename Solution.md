@@ -7,24 +7,23 @@
 - Do operatives need to record usage offline, or can stock commits require connectivity?
 - Can stock ever go negative operationally, for example because a van count is stale?
 - Does procurement already exist elsewhere, or should this module own purchase orders?
-- Are WorkOrder, Location, vehicle, and user identifiers globally unique, or tenant-scoped?
+- Are WorkOrder, Location, vehicle, and user identifiers globally unique across services?
 - Is FIFO/LIFO cost valuation needed in MVP, or only later?
 - Do stock adjustments, transfers, and stock takes require approval workflows?
 
 ### Assumptions
 
-- This is a multi-tenant B2B platform; all data is tenant-scoped.
 - The MVP focuses on accurate quantity tracking, auditability, and fast stock lookup.
 - WorkOrders and Locations are owned by existing services. This module stores external references and may keep local read-model stubs for display/validation.
 - Stock is held in containers: vans, warehouses, workshops, and future container types such as lockers.
 - Main user roles are Field Operative, Operations Manager, Store Manager, and General Manager/Admin.
 - PostgreSQL is the source of truth. RabbitMQ/Celery/SNS are delivery mechanisms, not the authoritative inventory history.
-- Stock cannot go negative by default. A tenant/SKU-level tolerance can allow controlled exceptions.
+- Stock cannot go negative by default. A SKU-level or system-level tolerance can allow controlled exceptions.
 
 ### Main risks
 
 - Offline mobile usage can create conflicts when multiple devices consume the same van stock before syncing.
-- Initial client data may be incomplete or inaccurate, so day-0 import needs validation and reconciliation.
+- Initial customer data may be incomplete or inaccurate, so day-0 import needs validation and reconciliation.
 - Reporting over the raw ledger can become expensive unless current balances and snapshots are used.
 - Synchronous validation against WorkOrder/Location services can reduce availability if those services are down.
 
@@ -111,11 +110,6 @@ queue event   = integration/delivery mechanism
 
 ```mermaid
 erDiagram
-    TENANT ||--o{ SKU : owns
-    TENANT ||--o{ STOCK_CONTAINER : owns
-    TENANT ||--o{ STOCK_LEDGER : owns
-    TENANT ||--o{ IMPORT_JOB : owns
-
     SKU ||--o{ STOCK_BALANCE : has
     STOCK_CONTAINER ||--o{ STOCK_BALANCE : contains
 
@@ -142,8 +136,7 @@ Material catalogue item.
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `tenant_id` | UUID | no | Client scope. |
-| `code` | varchar | no | Business SKU code, unique per tenant. |
+| `code` | varchar | no | Business SKU code. |
 | `name` | varchar | no | Display name. |
 | `unit` | varchar | no | Canonical unit: `each`, `box`, `metre`, etc. |
 | `tracking_method` | enum | no | `CONTAINER`, `UNIT`, or `CONTINUOUS`. |
@@ -153,10 +146,10 @@ Material catalogue item.
 
 Key constraints and indexes:
 
-- Unique `(tenant_id, code)`.
+- Unique `code`.
 - `min_increment > 0`.
 - `negative_tolerance >= 0`.
-- Index `(tenant_id, active)`.
+- Index `active`.
 
 Invariants:
 
@@ -170,9 +163,8 @@ Any place where stock is held.
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `tenant_id` | UUID | no | Client scope. |
 | `container_type` | enum | no | `VAN`, `WAREHOUSE`, `WORKSHOP`, later `LOCKER`, `BIN`. |
-| `code` | varchar | no | Business identifier, unique per tenant. |
+| `code` | varchar | no | Business identifier. |
 | `name` | varchar | no | Display name. |
 | `status` | enum | no | `ACTIVE`, `INACTIVE`, `QUARANTINED`. |
 | `location_ref` | varchar | yes | External Location service ID for site-based storage. |
@@ -180,8 +172,8 @@ Any place where stock is held.
 
 Key constraints and indexes:
 
-- Unique `(tenant_id, code)`.
-- Index `(tenant_id, container_type, status)`.
+- Unique `code`.
+- Index `(container_type, status)`.
 - Partial index on `vehicle_ref` where present.
 - Partial index on `location_ref` where present.
 
@@ -198,7 +190,6 @@ Fast current stock projection.
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `tenant_id` | UUID | no | Client scope. |
 | `container_id` | UUID | no | Stock container. |
 | `sku_id` | UUID | no | Material item. |
 | `on_hand` | numeric | no | Current physical quantity. |
@@ -208,9 +199,9 @@ Fast current stock projection.
 
 Key constraints and indexes:
 
-- Unique `(tenant_id, container_id, sku_id)`.
-- Index `(tenant_id, container_id)` for container stock.
-- Index `(tenant_id, sku_id)` for global stock by SKU.
+- Unique `(container_id, sku_id)`.
+- Index `container_id` for container stock.
+- Index `sku_id` for global stock by SKU.
 - `reserved >= 0`.
 
 Invariants:
@@ -226,20 +217,19 @@ Immutable movement header.
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `tenant_id` | UUID | no | Client scope. |
 | `movement_type` | enum | no | `USAGE`, `RECEIPT`, `TRANSFER`, `ADJUSTMENT`, `STOCKTAKE`, `INITIAL_LOAD`, `RETURN`. |
 | `external_ref_type` | varchar | yes | `WORK_ORDER`, `PURCHASE_ORDER`, `IMPORT_JOB`, etc. |
 | `external_ref` | varchar | yes | External ID. |
 | `reason_code` | varchar | yes | Required for adjustments and discrepancy corrections. |
-| `idempotency_key` | varchar | yes | Client retry key. |
+| `idempotency_key` | varchar | yes | API retry key. |
 | `created_by_ref` | varchar | no | User/operative/manager reference. |
 | `posted_at` | timestamptz | no | Business posting time. |
 
 Key constraints and indexes:
 
-- Unique `(tenant_id, idempotency_key)` where present.
-- Index `(tenant_id, movement_type, posted_at)`.
-- Index `(tenant_id, external_ref_type, external_ref)`.
+- Unique `idempotency_key` where present.
+- Index `(movement_type, posted_at)`.
+- Index `(external_ref_type, external_ref)`.
 - Future partitioning by `posted_at` if volume requires it.
 
 Invariants:
@@ -255,7 +245,6 @@ Line-level quantity delta.
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `tenant_id` | UUID | no | Client scope. |
 | `ledger_id` | UUID | no | Parent movement. |
 | `line_no` | integer | no | Stable order within movement. |
 | `sku_id` | UUID | no | Material item. |
@@ -267,10 +256,10 @@ Line-level quantity delta.
 
 Key constraints and indexes:
 
-- Unique `(tenant_id, ledger_id, line_no)`.
+- Unique `(ledger_id, line_no)`.
 - `quantity_delta <> 0`.
-- Index `(tenant_id, container_id, sku_id, posted_at)`.
-- Index `(tenant_id, sku_id, posted_at)`.
+- Index `(container_id, sku_id, posted_at)`.
+- Index `(sku_id, posted_at)`.
 
 Invariants:
 
@@ -308,7 +297,7 @@ Recommended model:
 
 ## 5. API Design
 
-All mutating endpoints require authorization, tenant context, permission checks, and an `Idempotency-Key` header.
+All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
 
 ### Record usage on a work order
 
@@ -449,7 +438,7 @@ The apply step creates `INITIAL_LOAD` ledger entries. It does not directly edit 
 
 ## 6. Day-0 Population
 
-Day-0 population is mandatory because clients already have stock in vans and sites.
+Day-0 population is mandatory because customers already have stock in vans and sites.
 
 Recommended process:
 
@@ -463,7 +452,7 @@ Recommended process:
 
 Validation examples:
 
-- SKU codes unique per tenant.
+- SKU codes are unique.
 - Units and tracking methods valid.
 - Containers exist or are declared in the import.
 - Quantities satisfy SKU increments.
@@ -484,7 +473,7 @@ Validation examples:
 
 1. Deploy schema and feature flags.
 2. Enable catalogue/container admin for internal users.
-3. Run day-0 import dry runs for a pilot tenant.
+3. Run day-0 import dry runs for a pilot customer/site.
 4. Enable receipts and current stock views.
 5. Enable transfers and manager adjustments.
 6. Enable work order usage for a small operative group, initially requiring online commits.
@@ -495,7 +484,7 @@ Validation examples:
 - Create container records from existing vehicles and storage locations.
 - Subscribe to WorkOrder, Location, vehicle, and operative assignment events.
 - Import initial stock through the day-0 workflow.
-- Reconcile imported totals with client sign-off totals.
+- Reconcile imported totals with customer sign-off totals.
 
 ## 8. Non-Functional Considerations
 
@@ -522,7 +511,7 @@ Every mutating request uses an `Idempotency-Key`.
 
 - Use the outbox pattern for SNS/RabbitMQ publishing.
 - Queue consumers must be idempotent because delivery is at-least-once.
-- External service outages should not corrupt stock. Depending on tenant policy, reject with retryable `503` or accept external refs and reconcile later.
+- External service outages should not corrupt stock. Depending on operational policy, reject with retryable `503` or accept external refs and reconcile later.
 - Posted ledger entries are immutable; corrections are new entries.
 
 ### Scalability
