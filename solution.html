@@ -721,7 +721,7 @@ The queue variant is useful if the product wants deterministic global command or
 <li><code>source_ref</code> and <code>destination_ref</code> are denormalized readability fields; <code>stock_ledger_line</code> remains authoritative for balance calculation.</li>
 </ul>
 <h2 id="stock_ledger_line"><code>stock_ledger_line</code></h2>
-<p>Line-level quantity delta.</p>
+<p>Line-level quantity posting.</p>
 <table>
 <thead>
 <tr>
@@ -763,10 +763,16 @@ The queue variant is useful if the product wants deterministic global command or
 <td>Container affected.</td>
 </tr>
 <tr>
-<td><code>quantity_delta</code></td>
+<td><code>quantity</code></td>
 <td>numeric</td>
 <td>no</td>
-<td>Positive inbound, negative outbound.</td>
+<td>Absolute quantity posted. Always positive.</td>
+</tr>
+<tr>
+<td><code>direction</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>IN</code> increases the container/account balance; <code>OUT</code> decreases it.</td>
 </tr>
 <tr>
 <td><code>unit_cost</code></td>
@@ -794,16 +800,18 @@ The queue variant is useful if the product wants deterministic global command or
 <li>Foreign key <code>ledger_id -&gt; stock_ledger.id</code>.</li>
 <li>Foreign key <code>sku_id -&gt; sku.id</code>.</li>
 <li>Foreign key <code>container_id -&gt; stock_container.id</code>.</li>
-<li><code>quantity_delta &lt;&gt; 0</code>.</li>
+<li><code>quantity &gt; 0</code>.</li>
+<li><code>direction in ('IN', 'OUT')</code>.</li>
 <li>Index <code>(container_id, sku_id, posted_at)</code>.</li>
 <li>Index <code>(sku_id, posted_at)</code>.</li>
 </ul>
 <p>Invariants:</p>
 <ul>
-<li>Usage creates negative lines.</li>
-<li>Receipt creates positive lines.</li>
-<li>Transfer creates one negative source line and one positive destination line under the same ledger entry.</li>
+<li>Usage creates an <code>OUT</code> line from the real container and an <code>IN</code> line to <code>WORK_ORDER_CONSUMED</code>.</li>
+<li>Receipt creates an <code>IN</code> line to the destination container and an <code>OUT</code> line from <code>SUPPLIER_SOURCE</code>.</li>
+<li>Transfer creates one <code>OUT</code> source line and one <code>IN</code> destination line under the same ledger entry.</li>
 <li>For double-entry consistency, every movement also has a balancing line.</li>
+<li>Balance impact is derived as <code>+quantity</code> for <code>IN</code> and <code>-quantity</code> for <code>OUT</code>.</li>
 <li>Receipts balance against <code>SUPPLIER_SOURCE</code>, usage balances against <code>WORK_ORDER_CONSUMED</code>, adjustments balance against <code>ADJUSTMENT_GAIN</code> or <code>ADJUSTMENT_LOSS</code>, and initial loads balance against <code>INITIAL_LOAD_SOURCE</code>.</li>
 </ul>
 <h2 id="stock_take"><code>stock_take</code></h2>
@@ -1089,7 +1097,7 @@ POST /stock-adjustments
 <li>Field Operative can consume only from an assigned van unless a manager overrides.</li>
 <li><code>container_id</code> must be a real container.</li>
 <li>Quantities must be positive and valid for the SKU increment.</li>
-<li>Internally, usage writes a negative line from the van and a positive balancing line to <code>WORK_ORDER_CONSUMED</code>, tagged with the work order reference.</li>
+<li>Internally, usage writes an <code>OUT</code> line from the van and an <code>IN</code> balancing line to <code>WORK_ORDER_CONSUMED</code>, tagged with the work order reference.</li>
 <li>If stock would fall below tolerance, return <code>409 INSUFFICIENT_STOCK</code>.</li>
 </ul>
 <h3 id="receive-stock">Receive Stock</h3>
@@ -1107,7 +1115,7 @@ POST /stock-adjustments
 <li>Store Manager permission required.</li>
 <li>Destination container must be active and real.</li>
 <li>Quantities must be positive.</li>
-<li>Internally, receipt writes a positive destination line and a negative balancing line from <code>SUPPLIER_SOURCE</code>.</li>
+<li>Internally, receipt writes an <code>IN</code> destination line and an <code>OUT</code> balancing line from <code>SUPPLIER_SOURCE</code>.</li>
 <li>Optional valuation data creates cost layers if enabled.</li>
 </ul>
 <h3 id="transfer-stock">Transfer Stock</h3>
@@ -1126,7 +1134,7 @@ POST /stock-adjustments
 <li>Operations Manager or Store Manager permission required.</li>
 <li>Source and destination must be different real containers.</li>
 <li>Source and destination balance rows are locked in deterministic order to reduce deadlocks.</li>
-<li>One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.</li>
+<li>One ledger entry contains both <code>OUT</code> source lines and <code>IN</code> destination lines. Since both sides are real containers, the transaction balances without a virtual container.</li>
 </ul>
 <h3 id="adjust-stock">Adjust Stock</h3>
 <p><code>POST /stock-adjustments</code></p>
@@ -1135,7 +1143,7 @@ POST /stock-adjustments
   &quot;reason_code&quot;: &quot;DAMAGED&quot;,
   &quot;notes&quot;: &quot;Cable roll damaged during loading.&quot;,
   &quot;lines&quot;: [
-    { &quot;sku_id&quot;: &quot;cable-001&quot;, &quot;quantity_delta&quot;: &quot;-1.5&quot;, &quot;unit&quot;: &quot;metre&quot; }
+    { &quot;sku_id&quot;: &quot;cable-001&quot;, &quot;quantity&quot;: &quot;1.5&quot;, &quot;direction&quot;: &quot;OUT&quot;, &quot;unit&quot;: &quot;metre&quot; }
   ]
 }
 </code></pre>
@@ -1144,8 +1152,8 @@ POST /stock-adjustments
 <li>Manager permission required.</li>
 <li>Reason is mandatory.</li>
 <li><code>container_id</code> must be a real container.</li>
-<li>Negative adjustments respect tolerance unless an elevated override is explicitly allowed.</li>
-<li>Negative adjustments balance against <code>ADJUSTMENT_LOSS</code>; positive adjustments balance against <code>ADJUSTMENT_GAIN</code>.</li>
+<li><code>OUT</code> adjustments respect tolerance unless an elevated override is explicitly allowed.</li>
+<li><code>OUT</code> adjustments balance against <code>ADJUSTMENT_LOSS</code>; <code>IN</code> adjustments balance against <code>ADJUSTMENT_GAIN</code>.</li>
 </ul>
 <h2 id="stock-takes">Stock Takes</h2>
 <pre><code class="language-text">POST  /stock-takes
@@ -1160,7 +1168,7 @@ PUT   /stock-takes/{stock_take_id}/lines/{sku_id}
 <li><code>PUT /stock-takes/{stock_take_id}/lines/{sku_id}</code> adds or replaces the counted quantity for one SKU.</li>
 <li>Posting is a lifecycle transition via <code>PATCH /stock-takes/{stock_take_id}</code> with <code>status: "POSTED"</code>, not an action endpoint.</li>
 <li>Posting creates a <code>STOCKTAKE</code> ledger entry for discrepancies.</li>
-<li>Positive discrepancies balance against <code>ADJUSTMENT_GAIN</code>; negative discrepancies balance against <code>ADJUSTMENT_LOSS</code>.</li>
+<li>Positive discrepancies create <code>IN</code> lines balanced against <code>ADJUSTMENT_GAIN</code>; negative discrepancies create <code>OUT</code> lines balanced against <code>ADJUSTMENT_LOSS</code>.</li>
 <li>If balances changed since the count was prepared, return <code>409 STOCK_TAKE_STALE</code>.</li>
 </ul>
 <h2 id="import-jobs">Import Jobs</h2>
