@@ -2,26 +2,7 @@
 
 ## ERD
 
-```mermaid
-erDiagram
-    SKU ||--o{ STOCK_BALANCE : has
-    STOCK_CONTAINER ||--o{ STOCK_BALANCE : contains
-
-    STOCK_LEDGER ||--o{ STOCK_LEDGER_LINE : has
-    SKU ||--o{ STOCK_LEDGER_LINE : moved
-    STOCK_CONTAINER ||--o{ STOCK_LEDGER_LINE : affected
-
-    STOCK_CONTAINER ||--o{ STOCK_TAKE : audited_by
-    STOCK_TAKE ||--o{ STOCK_TAKE_LINE : has
-    SKU ||--o{ STOCK_TAKE_LINE : counted
-
-    SKU ||--o{ REORDER_POLICY : governed_by
-    STOCK_CONTAINER ||--o{ REORDER_POLICY : scoped_to
-    REORDER_POLICY ||--o{ REORDER_REQUEST : creates
-
-    IMPORT_JOB ||--o{ STOCK_LEDGER : applies_as
-    STOCK_LEDGER ||--o{ OUTBOX_EVENT : published_as
-```
+The Mermaid ERD source is kept in `02-erd.mmd`.
 
 ## `sku`
 

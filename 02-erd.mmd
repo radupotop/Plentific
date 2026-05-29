@@ -1,0 +1,27 @@
+erDiagram
+    SKU ||--o{ STOCK_BALANCE : has_physical_balance
+    SKU ||--o{ STOCK_LEDGER_LINE : appears_in
+    SKU ||--o{ STOCK_TAKE_LINE : counted_as
+    SKU ||--o{ REORDER_POLICY : governed_by
+    SKU ||--o{ COST_LAYER : valued_by
+
+    STOCK_CONTAINER ||--o{ STOCK_BALANCE : contains_physical_stock
+    STOCK_CONTAINER ||--o{ STOCK_LEDGER_LINE : affected_by
+    STOCK_CONTAINER ||--o{ STOCK_TAKE : audited_by
+    STOCK_CONTAINER ||--o{ REORDER_POLICY : scoped_to
+    STOCK_CONTAINER ||--o{ COST_LAYER : holds_cost_layer
+
+    STOCK_LEDGER ||--o{ STOCK_LEDGER_LINE : has_lines
+    STOCK_LEDGER ||--o{ OUTBOX_EVENT : published_as
+    STOCK_LEDGER ||--o| STOCK_COMMAND : posted_from
+
+    STOCK_COMMAND ||--o| STOCK_LEDGER : posts
+    STOCK_COMMAND ||--o| IDEMPOTENCY_RECORD : deduplicated_by
+
+    STOCK_TAKE ||--o{ STOCK_TAKE_LINE : has_counts
+    STOCK_TAKE ||--o| STOCK_LEDGER : posts_discrepancy
+
+    IMPORT_JOB ||--o{ IMPORT_ROW_ERROR : reports
+    IMPORT_JOB ||--o{ STOCK_LEDGER : applies_as_initial_load
+
+    REORDER_POLICY ||--o{ REORDER_REQUEST : creates

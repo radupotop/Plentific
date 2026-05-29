@@ -1,15 +1,10 @@
 erDiagram
-    TENANT ||--o{ SKU : owns
-    TENANT ||--o{ STOCK_CONTAINER : owns
-    TENANT ||--o{ STOCK_MOVEMENT : owns
-    TENANT ||--o{ IMPORT_JOB : owns
-
     SKU ||--o{ STOCK_BALANCE : has
     STOCK_CONTAINER ||--o{ STOCK_BALANCE : contains
 
-    STOCK_MOVEMENT ||--o{ STOCK_MOVEMENT_LINE : has
-    SKU ||--o{ STOCK_MOVEMENT_LINE : moved
-    STOCK_CONTAINER ||--o{ STOCK_MOVEMENT_LINE : from_or_to
+    STOCK_LEDGER ||--o{ STOCK_LEDGER_LINE : has
+    SKU ||--o{ STOCK_LEDGER_LINE : moved
+    STOCK_CONTAINER ||--o{ STOCK_LEDGER_LINE : affected
 
     STOCK_CONTAINER ||--o{ STOCK_TAKE : audited_by
     STOCK_TAKE ||--o{ STOCK_TAKE_LINE : has
@@ -19,12 +14,5 @@ erDiagram
     STOCK_CONTAINER ||--o{ REORDER_POLICY : scoped_to
     REORDER_POLICY ||--o{ REORDER_REQUEST : creates
 
-    SKU ||--o{ COST_LAYER : valued_by
-    STOCK_CONTAINER ||--o{ COST_LAYER : held_in
-    STOCK_MOVEMENT_LINE ||--o{ COST_LAYER : creates_or_consumes
-
-    IMPORT_JOB ||--o{ IMPORT_ROW_ERROR : reports
-    IMPORT_JOB ||--o{ STOCK_MOVEMENT : applies_as
-
-    IDEMPOTENCY_RECORD ||--o| STOCK_MOVEMENT : returns
-    OUTBOX_EVENT }o--|| STOCK_MOVEMENT : publishes
+    IMPORT_JOB ||--o{ STOCK_LEDGER : applies_as
+    STOCK_LEDGER ||--o{ OUTBOX_EVENT : published_as
