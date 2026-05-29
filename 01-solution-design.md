@@ -87,7 +87,7 @@ High-level resource groups:
 - Ledger and typed transactions: `/stock-ledger-entries`, `/stock-usage-records`, `/stock-receipts`, `/stock-transfers`, `/stock-adjustments`.
 - Workflows: `/stock-takes`, `/import-jobs`, `/reorder-policies`, `/reorder-requests`.
 
-API rules:
+### API rules:
 
 - All mutating endpoints require authorization, permission checks, and an `Idempotency-Key`.
 - Mutating endpoints return a UUID handle.
@@ -96,6 +96,16 @@ API rules:
 - Audit/admin ledger APIs may expose virtual containers.
 - Lifecycle changes use `PATCH` status transitions, not action endpoints.
 - Business conflicts return `409`.
+
+### Idempotency-Key Generation
+
+Clients generate `Idempotency-Key` per logical mutation attempt. Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.
+
+The key should be treated as opaque by the server.
+A UUIDv4 or UUIDv7 is sufficient, optionally prefixed for debugging, for example `mobile:{device_id}:{uuid}`. 
+The server stores the key with a hash of the request body: same key plus same request returns the original result; same key plus different request returns `409 IDEMPOTENCY_KEY_CONFLICT`.
+
+For synchronous writes, retrying with the same key returns the same created resource or `ledger_id`. For the queued variant, retrying with the same key returns the same `command_id`.
 
 ### Global Ordered Queue
 
