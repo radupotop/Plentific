@@ -15,6 +15,8 @@ Stock & Materials Management module
 * StockBalance (projection of txn totals)
 * 
 
+Use double-entry bookkeeping for StockTxns
+
 
 ## External Entities
 

@@ -34,7 +34,7 @@ I would introduce a dedicated Django/DRF service called `stock-management`.
 It owns:
 
 - Material catalogue/SKUs and quantity rules.
-- Stock containers: vans, warehouses, workshops, later lockers/bins.
+- Stock containers: vans, warehouses, workshops, later lockers/bins, plus virtual accounting containers.
 - Immutable stock ledger entries.
 - Current stock balances.
 - Stock takes, adjustments, transfers, receipts, usage, and day-0 imports.
@@ -60,7 +60,7 @@ The service may maintain local stubs such as `known_work_order`, `known_location
 
 ## 3. Core Design
 
-Inventory mutations are stored in an append-only `StockLedger`.
+Inventory mutations are stored in an append-only `StockLedger` using double-entry inventory accounting.
 
 Every stock-changing action creates ledger records:
 
@@ -76,7 +76,18 @@ Current stock is stored separately in `stock_balance` for fast reads. This is a 
 
 Important invariant:
 
-> `stock_balance` must always be derivable from `stock_ledger_line`.
+> `stock_balance` for real containers must always be derivable from `stock_ledger_line`, and every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
+
+Real containers represent physical places where stock is held: vans, warehouses, workshops, lockers, and bins. Virtual containers are accounting accounts used to balance movements where stock enters or leaves physical inventory:
+
+- `SUPPLIER_SOURCE`: balances receipts into stock.
+- `WORK_ORDER_CONSUMED`: sink for materials consumed on work orders.
+- `ADJUSTMENT_GAIN`: source for found stock or positive corrections.
+- `ADJUSTMENT_LOSS`: sink for damaged, lost, or written-off stock.
+- `INITIAL_LOAD_SOURCE`: balances day-0 starting stock.
+- `RETURNED_FROM_WORK_ORDER`: source for future returns.
+
+Physical stock views include only real containers. Audit and reporting views may include both real and virtual containers.
 
 ### Write path
 
@@ -84,10 +95,11 @@ Important invariant:
 API request
   -> open PostgreSQL transaction
   -> validate user role, SKU rules, containers, and external refs where available
-  -> create or find affected stock_balance rows
+  -> create or find affected stock_balance rows for real containers
   -> lock affected rows with SELECT ... FOR UPDATE
   -> check no balance falls below allowed tolerance
   -> insert stock_ledger + stock_ledger_line rows
+  -> validate ledger lines balance to zero per SKU/unit
   -> update stock_balance projection
   -> insert outbox_event
   -> commit
@@ -158,12 +170,13 @@ Invariants:
 
 ### `stock_container`
 
-Any place where stock is held.
+Any real or virtual place where stock is posted. Real containers represent physical stock locations. Virtual containers represent accounting sources and sinks.
 
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
-| `container_type` | enum | no | `VAN`, `WAREHOUSE`, `WORKSHOP`, later `LOCKER`, `BIN`. |
+| `container_type` | enum | no | `VAN`, `WAREHOUSE`, `WORKSHOP`, later `LOCKER`, `BIN`, plus virtual types such as `SUPPLIER_SOURCE` and `WORK_ORDER_CONSUMED`. |
+| `is_virtual` | boolean | no | Whether this is an accounting container rather than a physical stock location. |
 | `code` | varchar | no | Business identifier. |
 | `name` | varchar | no | Display name. |
 | `status` | enum | no | `ACTIVE`, `INACTIVE`, `QUARANTINED`. |
@@ -173,7 +186,7 @@ Any place where stock is held.
 Key constraints and indexes:
 
 - Unique `code`.
-- Index `(container_type, status)`.
+- Index `(is_virtual, container_type, status)`.
 - Partial index on `vehicle_ref` where present.
 - Partial index on `location_ref` where present.
 
@@ -181,11 +194,12 @@ Invariants:
 
 - Van containers normally have a `vehicle_ref`.
 - Warehouse/workshop containers normally have a `location_ref`.
-- Inactive containers cannot receive normal operational movements.
+- Inactive real containers cannot receive normal operational movements.
+- Virtual containers are not shown in normal "stock on hand" operational views.
 
 ### `stock_balance`
 
-Fast current stock projection.
+Fast current stock projection for real containers.
 
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
@@ -203,12 +217,13 @@ Key constraints and indexes:
 - Index `container_id` for container stock.
 - Index `sku_id` for global stock by SKU.
 - `reserved >= 0`.
+- `container_id` must reference a real, non-virtual container.
 
 Invariants:
 
 - Updated only by the stock mutation transaction.
 - `available = on_hand - reserved`.
-- Rebuildable from the ledger.
+- Rebuildable from ledger lines where `container.is_virtual = false`.
 
 ### `stock_ledger`
 
@@ -236,7 +251,8 @@ Invariants:
 
 - Posted ledger records are immutable.
 - Corrections are represented by new adjustment movements.
-- Every ledger entry has at least one line.
+- Every ledger entry has at least two lines.
+- Posted ledger entries must balance to zero per SKU/unit across their lines.
 
 ### `stock_ledger_line`
 
@@ -266,6 +282,7 @@ Invariants:
 - Usage creates negative lines.
 - Receipt creates positive lines.
 - Transfer creates one negative source line and one positive destination line under the same ledger entry.
+- For double-entry consistency, every movement also has a balancing line. Receipts balance against `SUPPLIER_SOURCE`, usage balances against `WORK_ORDER_CONSUMED`, adjustments balance against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`, and initial loads balance against `INITIAL_LOAD_SOURCE`.
 
 ### Supporting tables
 
@@ -283,7 +300,7 @@ Invariants:
 
 ### Ledger vs balances vs snapshots
 
-Ledger-only is best for auditability but too slow for frequent mobile and dashboard reads because every lookup aggregates history.
+Ledger-only is best for auditability, especially with double-entry balancing, but too slow for frequent mobile and dashboard reads because every lookup aggregates history.
 
 Persisted balances are fast and easy to lock for concurrent writes, but they are a projection. They must only be updated transactionally with ledger inserts.
 
@@ -291,7 +308,7 @@ Snapshots/materialized views are useful for historical reports and `stock at tim
 
 Recommended model:
 
-- Ledger is the source of truth.
+- Ledger is the balanced source of truth.
 - Balance is the current projection.
 - Snapshots/read replicas support reporting.
 
@@ -320,7 +337,7 @@ Rules:
 - Field Operative can consume only from an assigned van unless a manager overrides.
 - WorkOrder is validated against a local stub or external service, depending on availability strategy.
 - Quantities must be positive and valid for the SKU increment.
-- Internally, usage writes negative ledger lines.
+- Internally, usage writes a negative line from the van and a positive balancing line to `WORK_ORDER_CONSUMED`, tagged with the work order reference.
 - If stock would fall below tolerance, return `409 INSUFFICIENT_STOCK`.
 
 ### Receive stock
@@ -342,6 +359,7 @@ Rules:
 - Store Manager permission required.
 - Destination container must be active.
 - Quantities are positive.
+- Internally, receipt writes a positive destination line and a negative balancing line from `SUPPLIER_SOURCE`.
 - Optional valuation data creates cost layers if enabled.
 
 ### Transfer stock
@@ -364,7 +382,7 @@ Rules:
 - Operations Manager or Store Manager permission required.
 - Source and destination must differ.
 - Source and destination balance rows are locked in deterministic order to reduce deadlocks.
-- One ledger entry contains both source negative lines and destination positive lines.
+- One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.
 
 ### Adjust stock
 
@@ -386,6 +404,7 @@ Rules:
 - Manager permission required.
 - Reason is mandatory.
 - Negative adjustments respect tolerance unless an elevated override is explicitly allowed.
+- Internally, negative adjustments balance against `ADJUSTMENT_LOSS`; positive adjustments balance against `ADJUSTMENT_GAIN`.
 
 ### Stock queries
 
@@ -405,7 +424,7 @@ POST /stock-takes/{id}/lines
 POST /stock-takes/{id}/post
 ```
 
-Posting a stock take creates a `STOCKTAKE` ledger entry for discrepancies. If balances changed since the count was prepared, return `409 STOCK_TAKE_STALE` with current expected quantities.
+Posting a stock take creates a `STOCKTAKE` ledger entry for discrepancies. Positive discrepancies balance against `ADJUSTMENT_GAIN`; negative discrepancies balance against `ADJUSTMENT_LOSS`. If balances changed since the count was prepared, return `409 STOCK_TAKE_STALE` with current expected quantities.
 
 ### Day-0 import
 
@@ -423,7 +442,7 @@ The import flow supports CSV or API payloads for:
 - Initial stock quantities per container.
 - Optional initial cost layers.
 
-The apply step creates `INITIAL_LOAD` ledger entries. It does not directly edit balances.
+The apply step creates `INITIAL_LOAD` ledger entries balanced against `INITIAL_LOAD_SOURCE`. It does not directly edit balances.
 
 ### Error semantics
 
