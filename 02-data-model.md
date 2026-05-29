@@ -2,7 +2,8 @@
 
 ## ERD
 
-The Mermaid diagram source is kept in `02-erd.mmd`. It intentionally shows only the core stock model; supporting workflow/integration tables are listed later.
+The Mermaid diagram source is kept in `02-erd.mmd`. 
+It intentionally shows only the core stock model; supporting workflow/integration tables are listed later.
 
 ## `sku`
 
