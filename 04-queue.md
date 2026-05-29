@@ -226,7 +226,13 @@ A local outbox item should contain:
 - `ledger_id`: posted ledger UUID once the command is `POSTED`.
 - `rejection`: structured rejection details if the command is `REJECTED`.
 
-### Recommended flow:
+### The flow:
+
+- User records stock usage while offline.
+- App persists local outbox item and idempotency key before any network attempt.
+- When online, app submits with Idempotency-Key.
+- Server returns command_id.
+- App stores command_id and polls until POSTED or REJECTED.
 
 ```text
 operative records stock usage offline
