@@ -2,7 +2,7 @@
 
 ## 1. Questions and Assumptions
 
-Questions to ask:
+Questions:
 
 - Do operatives need to record usage offline, or can stock commits require connectivity?
 - Can stock ever go negative operationally, for example because a van count is stale?
