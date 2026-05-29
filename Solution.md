@@ -72,13 +72,21 @@ Every stock-changing action creates ledger records:
 - `INITIAL_LOAD`: day-0 starting stock.
 - `RETURN`: future return from a job.
 
-Current stock is stored separately in `stock_balance` for fast reads. This is a projection of the ledger, not a separate source of truth.
+Current physical stock is stored separately in `stock_balance` for fast reads. This is a projection of the ledger for real containers only, not a separate source of truth.
 
 Important invariant:
 
 > `stock_balance` for real containers must always be derivable from `stock_ledger_line`, and every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
 
-Real containers represent physical places where stock is held: vans, warehouses, workshops, lockers, and bins. Virtual containers are accounting accounts used to balance movements where stock enters or leaves physical inventory:
+### Real vs virtual stock
+
+Real stock means physical inventory that can be counted, transferred, reserved, or used by operatives. It exists only in real containers such as vans, warehouses, workshops, lockers, and bins.
+
+Virtual stock is not available inventory. It is an accounting representation used only inside the ledger to make each transaction balanced and explain where stock came from or went. 
+
+Virtual containers should never be assignable to operatives, selected as transfer destinations in normal UI, or included in operational on-hand totals.
+
+Virtual containers include:
 
 - `SUPPLIER_SOURCE`: balances receipts into stock.
 - `WORK_ORDER_CONSUMED`: sink for materials consumed on work orders.
@@ -87,7 +95,7 @@ Real containers represent physical places where stock is held: vans, warehouses,
 - `INITIAL_LOAD_SOURCE`: balances day-0 starting stock.
 - `RETURNED_FROM_WORK_ORDER`: source for future returns.
 
-Physical stock views include only real containers. Audit and reporting views may include both real and virtual containers.
+Operational stock views include only real containers. Audit and reporting views may include both real and virtual containers.
 
 ### Write path
 
@@ -111,9 +119,10 @@ This uses PostgreSQL transactions for atomicity and row locks for concurrency. T
 Queue events are not the durable source of truth. They notify other services that a committed stock movement happened.
 
 ```text
-stock_ledger  = permanent source of truth
-stock_balance = current-state projection
-queue event   = integration/delivery mechanism
+stock_ledger          = permanent source of truth, including real and virtual postings
+stock_balance         = current physical stock projection for real containers only
+virtual ledger lines  = accounting explanation, not available stock
+queue event           = integration/delivery mechanism
 ```
 
 ## 4. Data Model
@@ -170,7 +179,9 @@ Invariants:
 
 ### `stock_container`
 
-Any real or virtual place where stock is posted. Real containers represent physical stock locations. Virtual containers represent accounting sources and sinks.
+Any real or virtual place where stock is posted. Real containers represent physical stock locations.
+
+Virtual containers represent accounting sources and sinks and do not hold operational stock.
 
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
@@ -195,11 +206,12 @@ Invariants:
 - Van containers normally have a `vehicle_ref`.
 - Warehouse/workshop containers normally have a `location_ref`.
 - Inactive real containers cannot receive normal operational movements.
-- Virtual containers are not shown in normal "stock on hand" operational views.
+- Virtual containers are not shown in normal "stock on hand" operational views and cannot be used for reservations, van assignment, or manual transfers.
 
 ### `stock_balance`
 
-Fast current stock projection for real containers.
+Fast current physical stock projection for real containers only. 
+There are no `stock_balance` rows for virtual containers.
 
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
@@ -224,6 +236,7 @@ Invariants:
 - Updated only by the stock mutation transaction.
 - `available = on_hand - reserved`.
 - Rebuildable from ledger lines where `container.is_virtual = false`.
+- Represents operational on-hand stock only; virtual ledger quantities are excluded.
 
 ### `stock_ledger`
 
@@ -282,7 +295,8 @@ Invariants:
 - Usage creates negative lines.
 - Receipt creates positive lines.
 - Transfer creates one negative source line and one positive destination line under the same ledger entry.
-- For double-entry consistency, every movement also has a balancing line. Receipts balance against `SUPPLIER_SOURCE`, usage balances against `WORK_ORDER_CONSUMED`, adjustments balance against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`, and initial loads balance against `INITIAL_LOAD_SOURCE`.
+- For double-entry consistency, every movement also has a balancing line. 
+- Receipts balance against `SUPPLIER_SOURCE`, usage balances against `WORK_ORDER_CONSUMED`, adjustments balance against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`, and initial loads balance against `INITIAL_LOAD_SOURCE`.
 
 ### Supporting tables
 
@@ -302,14 +316,14 @@ Invariants:
 
 Ledger-only is best for auditability, especially with double-entry balancing, but too slow for frequent mobile and dashboard reads because every lookup aggregates history.
 
-Persisted balances are fast and easy to lock for concurrent writes, but they are a projection. They must only be updated transactionally with ledger inserts.
+Persisted balances are fast and easy to lock for concurrent writes, but they are a projection of physical stock only. They must only be updated transactionally with ledger inserts for real containers.
 
 Snapshots/materialized views are useful for historical reports and `stock at time T`. They should not replace the write model. A practical approach is daily snapshots plus ledger deltas after the snapshot.
 
 Recommended model:
 
-- Ledger is the balanced source of truth.
-- Balance is the current projection.
+- Ledger is the balanced source of truth for real and virtual postings.
+- Balance is the current physical stock projection for real containers.
 - Snapshots/read replicas support reporting.
 
 ## 5. API Design
@@ -337,6 +351,7 @@ Rules:
 - Field Operative can consume only from an assigned van unless a manager overrides.
 - WorkOrder is validated against a local stub or external service, depending on availability strategy.
 - Quantities must be positive and valid for the SKU increment.
+- The requested `container_id` must be a real container.
 - Internally, usage writes a negative line from the van and a positive balancing line to `WORK_ORDER_CONSUMED`, tagged with the work order reference.
 - If stock would fall below tolerance, return `409 INSUFFICIENT_STOCK`.
 
@@ -358,6 +373,7 @@ Rules:
 
 - Store Manager permission required.
 - Destination container must be active.
+- Destination container must be real.
 - Quantities are positive.
 - Internally, receipt writes a positive destination line and a negative balancing line from `SUPPLIER_SOURCE`.
 - Optional valuation data creates cost layers if enabled.
@@ -380,7 +396,7 @@ Rules:
 Rules:
 
 - Operations Manager or Store Manager permission required.
-- Source and destination must differ.
+- Source and destination must be different real containers.
 - Source and destination balance rows are locked in deterministic order to reduce deadlocks.
 - One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.
 
@@ -403,6 +419,7 @@ Rules:
 
 - Manager permission required.
 - Reason is mandatory.
+- The requested `container_id` must be a real container.
 - Negative adjustments respect tolerance unless an elevated override is explicitly allowed.
 - Internally, negative adjustments balance against `ADJUSTMENT_LOSS`; positive adjustments balance against `ADJUSTMENT_GAIN`.
 
@@ -414,7 +431,7 @@ GET /containers/{container_id}/stock-levels
 GET /containers/{container_id}/stock-levels/history?at=2026-05-28T09:00:00Z
 ```
 
-Current reads use `stock_balance`. Historical reads use snapshots plus ledger deltas, or direct ledger aggregation for small ranges.
+Current operational reads use `stock_balance` and return only real-container on-hand stock. Historical operational reads also exclude virtual containers unless an explicit audit/reporting endpoint requests full ledger postings. Historical reads use snapshots plus ledger deltas, or direct ledger aggregation for small ranges.
 
 ### Stock take
 
