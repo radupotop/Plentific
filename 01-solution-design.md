@@ -62,7 +62,8 @@ The detailed `stock_ledger_line` rows remain authoritative for balances and doub
 *Virtual stock* is not available inventory; it only explains where stock came from or went in the ledger.
 
 These virtual containers act like source, sink, or contra accounts for inventory movements. 
-For MVP keep the terminology as virtual containers because this is operational stock management, not a general ledger. If valuation/accounting becomes important, the virtual containers can be mapped to formal contra accounts such as consumed inventory, shrinkage/write-off, and adjustment gain/loss.
+For MVP keep the terminology as virtual containers because this is operational stock management, not a general ledger. 
+If valuation/accounting becomes important, the virtual containers can be mapped to formal contra accounts such as consumed inventory, shrinkage/write-off, and adjustment gain/loss.
 
 Important invariants:
 
