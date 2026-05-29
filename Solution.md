@@ -1,8 +1,8 @@
 # Stock and Materials Management Design
 
-## 1. Questions, Assumptions, and Scope
+## 1. Questions and Assumptions
 
-### Questions I would ask
+Questions to ask:
 
 - Do operatives need to record usage offline, or can stock commits require connectivity?
 - Can stock ever go negative operationally, for example because a van count is stale?
@@ -11,130 +11,83 @@
 - Is FIFO/LIFO cost valuation needed in MVP, or only later?
 - Do stock adjustments, transfers, and stock takes require approval workflows?
 
-### Assumptions
+Assumptions:
 
-- The MVP focuses on accurate quantity tracking, auditability, and fast stock lookup.
-- WorkOrders and Locations are owned by existing services. This module stores external references and may keep local read-model stubs for display/validation.
-- Stock is held in containers: vans, warehouses, workshops, and future container types such as lockers.
-- Main user roles are Field Operative, Operations Manager, Store Manager, and General Manager/Admin.
-- PostgreSQL is the source of truth. RabbitMQ/Celery/SNS are delivery mechanisms, not the authoritative inventory history.
+- The MVP focuses on quantity accuracy, auditability, and fast stock lookup.
+- WorkOrders and Locations remain owned by existing services.
+- This module stores external references and may keep local read-model stubs from SNS events.
+- PostgreSQL is the source of truth; RabbitMQ/Celery/SNS are delivery mechanisms.
 - Stock cannot go negative by default. A SKU-level or system-level tolerance can allow controlled exceptions.
 
-### Main risks
+Main risks:
 
-- Offline mobile usage can create conflicts when multiple devices consume the same van stock before syncing.
-- Initial customer data may be incomplete or inaccurate, so day-0 import needs validation and reconciliation.
-- Reporting over the raw ledger can become expensive unless current balances and snapshots are used.
-- Synchronous validation against WorkOrder/Location services can reduce availability if those services are down.
+- Offline mobile usage can create conflicts when devices sync later.
+- Day-0 stock data may be incomplete or inaccurate.
+- Historical reporting over raw ledger tables can degrade OLTP performance.
+- Synchronous validation against external services can reduce stock-service availability.
 
-## 2. Proposed Architecture
+## 2. Architecture
 
-I would introduce a dedicated Django/DRF service called `stock-management`.
+Introduce a dedicated Django/DRF service called `stock-management`.
 
 It owns:
 
-- Material catalogue/SKUs and quantity rules.
-- Stock containers: vans, warehouses, workshops, later lockers/bins, plus virtual accounting containers.
-- Immutable stock ledger entries.
-- Current stock balances.
-- Stock takes, adjustments, transfers, receipts, usage, and day-0 imports.
-- Reorder policies and lightweight reorder requests.
+- SKUs, unit rules, and increment validation.
+- Real stock containers such as vans, warehouses, workshops, lockers, and bins.
+- Virtual accounting containers used only by the ledger.
+- Immutable stock ledger entries and current stock balances.
+- Stock takes, adjustments, transfers, receipts, work-order usage, day-0 imports, and reorder requests.
 - Optional cost layers for FIFO/LIFO valuation.
 
-It does not own:
+It does not own WorkOrder, Location, user identity, vehicle assignment, or full procurement lifecycle. Those remain external services referenced by IDs such as `work_order_ref`, `location_ref`, `vehicle_ref`, and `user_ref`.
 
-- WorkOrder lifecycle.
-- Location/property lifecycle.
-- User/operative identity.
-- Vehicle assignment source of truth.
-- Full procurement lifecycle, if that already exists elsewhere.
+## 3. Core Model
 
-External concepts are represented as references:
+Inventory changes are represented as an append-only double-entry ledger.
 
-- `work_order_ref` for usage.
-- `location_ref` for storage sites.
-- `vehicle_ref` for van containers.
-- `operative_ref` / `user_ref` for audit and access control.
+Every stock-changing operation creates a balanced `stock_ledger` entry:
 
-The service may maintain local stubs such as `known_work_order`, `known_location`, or `vehicle_assignment` from SNS events. These are read models, not ownership boundaries.
+- Receipts balance real stock against `SUPPLIER_SOURCE`.
+- Work-order usage balances a van against `WORK_ORDER_CONSUMED`.
+- Transfers balance one real container against another real container.
+- Adjustments balance real stock against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`.
+- Day-0 imports balance real stock against `INITIAL_LOAD_SOURCE`.
 
-## 3. Core Design
+Real stock is physical inventory that can be counted, transferred, reserved, or used by operatives. Virtual stock is not available inventory; it only explains where stock came from or went in the ledger.
 
-Inventory mutations are stored in an append-only `StockLedger` using double-entry inventory accounting.
+Important invariants:
 
-Every stock-changing action creates ledger records:
+- `stock_balance` exists only for real containers.
+- `stock_balance` must be derivable from `stock_ledger_line`.
+- Every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
+- Posted ledger entries are immutable; corrections are new movements.
 
-- `RECEIPT`: goods received into a container.
-- `USAGE`: materials consumed on a work order.
-- `TRANSFER`: stock moved between containers.
-- `ADJUSTMENT`: manual correction with a reason.
-- `STOCKTAKE`: discrepancy correction from an audit.
-- `INITIAL_LOAD`: day-0 starting stock.
-- `RETURN`: future return from a job.
+Full ERD, fields, constraints, indexes, and ledger/balance trade-offs are in `data-model.md`.
 
-Current physical stock is stored separately in `stock_balance` for fast reads. This is a projection of the ledger for real containers only, not a separate source of truth.
+## 4. API Design
 
-Important invariant:
-
-> `stock_balance` for real containers must always be derivable from `stock_ledger_line`, and every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
-
-### Real vs virtual stock
-
-Real stock means physical inventory that can be counted, transferred, reserved, or used by operatives. It exists only in real containers such as vans, warehouses, workshops, lockers, and bins.
-
-Virtual stock is not available inventory. It is an accounting representation used only inside the ledger to make each transaction balanced and explain where stock came from or went. 
-
-Virtual containers should never be assignable to operatives, selected as transfer destinations in normal UI, or included in operational on-hand totals.
-
-Virtual containers include:
-
-- `SUPPLIER_SOURCE`: balances receipts into stock.
-- `WORK_ORDER_CONSUMED`: sink for materials consumed on work orders.
-- `ADJUSTMENT_GAIN`: source for found stock or positive corrections.
-- `ADJUSTMENT_LOSS`: sink for damaged, lost, or written-off stock.
-- `INITIAL_LOAD_SOURCE`: balances day-0 starting stock.
-- `RETURNED_FROM_WORK_ORDER`: source for future returns.
-
-Operational stock views include only real containers. Audit and reporting views may include both real and virtual containers.
-
-## 4. Data Model
-
-The detailed ERD, field-level descriptions, constraints, indexes, and ledger/balance trade-offs are kept in `data-model.md`.
-
-The core model is:
-
-- `sku`: material catalogue item and unit/increment rules.
-- `stock_container`: real or virtual stock location.
-- `stock_balance`: read-optimized physical stock projection for real containers only.
-- `stock_ledger` and `stock_ledger_line`: immutable double-entry source of truth.
-- Supporting workflow tables for idempotency, stock takes, import jobs, reorders, outbox events, and optional cost layers.
-
-The important trade-off is hybrid storage: the ledger is the source of truth, balances provide fast current reads, and snapshots/read replicas support historical reporting.
-
-## 5. API Design
-
-The detailed endpoint catalogue is kept in `endpoints.md`. 
-
-The API is REST-oriented around main resources while keeping typed transaction resources for business clarity.
+The API is REST-oriented around main resources while keeping typed transaction resources for business clarity. Full endpoint details are in `endpoints.md`.
 
 High-level resource groups:
 
 - Catalogue and containers: `/skus`, `/stock-containers`.
 - Physical stock views: `/stock-balances`, `/stock-containers/{id}/balances`, `/skus/{id}/balances`.
 - Ledger and typed transactions: `/stock-ledger-entries`, `/stock-usage-records`, `/stock-receipts`, `/stock-transfers`, `/stock-adjustments`.
-- Operational workflows: `/stock-takes`, `/import-jobs`, `/reorder-policies`, `/reorder-requests`.
+- Workflows: `/stock-takes`, `/import-jobs`, `/reorder-policies`, `/reorder-requests`.
 
-Important API rules:
+API rules:
 
-- All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
-- Mutating endpoints return a UUID handle: either the created resource ID for synchronous writes or `command_id` for queued writes.
-- `stock_balance` is read-only through the API; clients never directly create or update balances.
-- Typed transaction resources create immutable balanced `stock_ledger` entries.
-- Operational APIs expose only real containers and physical stock. Audit/admin ledger APIs may expose virtual containers.
-- Lifecycle changes such as posting a stock take or approving/applying an import are represented as `PATCH` status transitions, not action endpoints.
-- Business conflicts return `409`, for example insufficient stock, stale stock take, invalid lifecycle transition, or idempotency conflict.
+- All mutating endpoints require authorization, permission checks, and an `Idempotency-Key`.
+- Mutating endpoints return a UUID handle.
+- `stock_balance` is read-only through the API.
+- Operational APIs expose only real containers and physical stock.
+- Audit/admin ledger APIs may expose virtual containers.
+- Lifecycle changes use `PATCH` status transitions, not action endpoints.
+- Business conflicts return `409`.
 
-## 6. Day-0 Population
+An optional global ordered queue variant is described in `queue.md`. In that model, mutating endpoints return `202 Accepted` with a UUID `command_id`; the command worker posts ledger entries in sequence.
+
+## 5. Day-0 Population
 
 Day-0 population is mandatory because customers already have stock in vans and sites.
 
@@ -145,121 +98,74 @@ Recommended process:
 3. Show row-level errors and warnings.
 4. Require manager/admin approval.
 5. Apply the import as `INITIAL_LOAD` ledger entries.
-6. Produce a reconciliation report with totals by SKU and container.
-7. Prevent accidental duplicate initial loads unless explicitly marked as correction imports.
+6. Produce a reconciliation report by SKU and container.
+7. Prevent duplicate initial loads unless explicitly marked as correction imports.
 
-Validation examples:
+Initial quantities must enter through the same ledger path as every other mutation. They should not be inserted directly into `stock_balance`.
 
-- SKU codes are unique.
-- Units and tracking methods valid.
-- Containers exist or are declared in the import.
-- Quantities satisfy SKU increments.
-- Initial quantities are non-negative unless this is a signed-off corrective import.
-- Cost layers sum to the imported quantity when valuation is enabled.
+## 6. Migration and Rollout
 
-## 7. Migration and Rollout
+Use additive schema migrations in the new `stock-management` service. Do not change existing WorkOrder or Location tables.
 
-### Schema migration
+Rollout plan:
 
-- Build this as a new service/schema without changing existing WorkOrder or Location tables.
-- Use additive migrations first: create tables, indexes, and read models.
-- Create large indexes concurrently where needed.
-- Avoid destructive changes during rollout.
-- Keep movement tables designed for future partitioning by `posted_at`.
-
-### Rollout plan
-
-1. Deploy schema and feature flags.
-2. Enable catalogue/container admin for internal users.
+1. Deploy schema, service, and feature flags.
+2. Enable catalogue and container admin for internal users.
 3. Run day-0 import dry runs for a pilot customer/site.
 4. Enable receipts and current stock views.
 5. Enable transfers and manager adjustments.
-6. Enable work order usage for a small operative group, initially requiring online commits.
+6. Enable work-order usage for a small operative group, initially requiring online commits.
 7. Add stock takes and reorder policies once stock data quality is stable.
 
-### Backfills
+Backfills:
 
 - Create container records from existing vehicles and storage locations.
-- Subscribe to WorkOrder, Location, vehicle, and operative assignment events.
-- Import initial stock through the day-0 workflow.
+- Subscribe to WorkOrder, Location, vehicle, and operative-assignment events.
+- Import starting stock through the day-0 workflow.
 - Reconcile imported totals with customer sign-off totals.
 
-## 8. Non-Functional Considerations
+## 7. Non-Functional Considerations
 
-### Concurrency
+Concurrency:
 
-Use PostgreSQL row-level locks on affected `stock_balance` rows.
-
+- Default model uses PostgreSQL row-level locks on affected `stock_balance` rows.
 - Lock rows in deterministic order.
 - Keep transactions short.
-- Validate availability while locks are held.
-- Use optimistic `version` fields for stale-read detection, not as the sole correctness mechanism.
+- Use optimistic `version` fields only for stale-read detection, not decrement correctness.
 
-This is appropriate for hundreds of concurrent users and thousands of movements per day.
+Reliability:
 
-### Idempotency
-
-Every mutating request uses an `Idempotency-Key`.
-
-- Same key + same request returns the original response.
-- Same key + different request returns `409 IDEMPOTENCY_KEY_CONFLICT`.
-- Idempotency rows are committed with the stock mutation.
-
-### Reliability
-
+- Use idempotency records for safe mobile/API retries.
 - Use the outbox pattern for SNS/RabbitMQ publishing.
 - Queue consumers must be idempotent because delivery is at-least-once.
-- External service outages should not corrupt stock. Depending on operational policy, reject with retryable `503` or accept external refs and reconcile later.
-- Posted ledger entries are immutable; corrections are new entries.
+- Reconciliation jobs compare ledger-derived totals against `stock_balance`.
 
-### Scalability
+Scalability:
 
-- Current stock APIs read from `stock_balance`.
-- Common indexes support lookup by container and by SKU.
+- Current stock reads use `stock_balance`.
 - Historical reporting uses snapshots, read replicas, or analytical exports.
-- Reorder checks can run asynchronously after balance updates.
-- Large imports run in Celery with progress tracking.
+- Movement tables can be partitioned by `posted_at` later.
+- Reorder checks and imports can run asynchronously.
 
-### Observability
+Observability:
 
-Track:
+- Track movement counts, mutation latency, lock wait time, insufficient-stock conflicts, negative balances, outbox lag, import errors, and ledger/balance mismatches.
+- Alert on balances below tolerance, reconciliation mismatch, outbox backlog, import apply failures, and elevated conflict rates.
 
-- Movement count by type.
-- Stock mutation latency.
-- Balance lock wait time.
-- Insufficient stock conflicts.
-- Negative balances beyond tolerance.
-- Outbox publish lag.
-- Import validation errors.
-- Ledger/balance reconciliation mismatches.
+## 8. MVP to v2
 
-Alert on:
+MVP:
 
-- Balance below allowed tolerance.
-- Ledger and balance mismatch.
-- Outbox backlog beyond SLA.
-- Import apply failures.
-- High conflict/error rates after rollout.
-
-## 9. MVP to v2
-
-### MVP
-
-- Roles and permissions for Field Operative, Operations Manager, Store Manager, and Admin.
-- SKU catalogue with units, tracking methods, and increments.
-- Stock containers for vans, warehouses, and workshops.
-- Permanent append-only stock ledger.
+- SKU catalogue with unit and increment rules.
+- Real and virtual stock containers.
+- Double-entry stock ledger.
 - Transactional stock balances.
-- Work order usage.
-- Receipts.
-- Transfers.
-- Adjustments.
-- Current stock queries.
+- Work-order usage, receipts, transfers, adjustments, current stock queries.
 - Day-0 import with validation and approval.
 - Basic stock take and discrepancy posting.
 - Outbox events and core monitoring.
 
-### v2
+v2:
 
 - Reservations and allocations.
 - Returns from work orders.
@@ -269,10 +175,3 @@ Alert on:
 - Bin-level warehouse structure.
 - Approval workflows for high-value or unusual movements.
 - Reporting snapshots and analytical exports.
-
-### Deferred but enabled
-
-- Full procurement can live in a separate procurement service while receipts remain in stock management.
-- New container types are additive.
-- Cost valuation can be added without changing the quantity ledger.
-- Historical reporting can move to a warehouse without changing write semantics.
