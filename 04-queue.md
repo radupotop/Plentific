@@ -211,6 +211,41 @@ mobile local draft/outbox
 
 This means the queue should be paired with mobile UI states for `PENDING`, `POSTED`, and `REJECTED` operations.
 
+## Mobile Local Outbox
+
+The mobile local outbox is the client-side companion to the server-side queue. It handles the case where the operative is fully offline or the app crashes before the request reaches the backend.
+
+A local outbox item should contain:
+
+- `local_operation_id`: client-side UUID for the local action.
+- `idempotency_key`: generated once and reused for every retry.
+- `operation_type`: for example `stock-usage-record`.
+- `payload`: the request body to submit when online.
+- `local_status`: `DRAFT`, `READY_TO_SYNC`, `SUBMITTING`, `SERVER_PENDING`, `POSTED`, `REJECTED`, or `FAILED_RETRYABLE`.
+- `command_id`: server command UUID once accepted.
+- `ledger_id`: posted ledger UUID once the command is `POSTED`.
+- `rejection`: structured rejection details if the command is `REJECTED`.
+
+### Recommended flow:
+
+```text
+operative records stock usage offline
+  -> app writes local outbox item with Idempotency-Key
+  -> app submits when connectivity returns
+  -> server creates stock_command and returns command_id
+  -> app stores command_id and marks local item SERVER_PENDING
+  -> app polls command status
+  -> app marks local item POSTED or REJECTED
+```
+
+### Failure behavior:
+
+- If the app crashes before submit, the local outbox item remains retryable.
+- If the network drops after submit, retrying with the same `Idempotency-Key` returns the same `command_id`.
+- If the server posts the command, the app stores `ledger_id` and marks the local item `POSTED`.
+- If the server rejects the command, for example due to insufficient stock, the app surfaces a user-resolvable `REJECTED` state.
+- If the same local operation is submitted twice, idempotency ensures only one server command is created.
+
 ## Tradeoffs
 
 - Stock writes become eventually consistent from the client perspective.

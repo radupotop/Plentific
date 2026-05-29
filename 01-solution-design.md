@@ -108,6 +108,8 @@ The server stores the key with a hash of the request body: same key plus same re
 
 For synchronous writes, retrying with the same key returns the same created resource or `ledger_id`. For the queued variant, retrying with the same key returns the same `command_id`.
 
+Fully offline mobile usage also requires a mobile local outbox: the app must persist the draft operation and idempotency key locally before the first network attempt, then submit and reconcile it when connectivity returns.
+
 ### Global Ordered Queue
 
 An optional global ordered queue variant is described in `04-queue.md`. 
