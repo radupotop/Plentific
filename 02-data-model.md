@@ -161,14 +161,65 @@ Invariants:
 - For double-entry consistency, every movement also has a balancing line.
 - Receipts balance against `SUPPLIER_SOURCE`, usage balances against `WORK_ORDER_CONSUMED`, adjustments balance against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`, and initial loads balance against `INITIAL_LOAD_SOURCE`.
 
+## `stock_take`
+
+Physical stock audit session for one real container.
+
+| Field | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | UUID | no | Primary key. |
+| `container_id` | UUID | no | Container being counted. |
+| `status` | enum | no | `DRAFT`, `COUNTED`, `POSTED`, or `CANCELLED`. |
+| `started_by_ref` | varchar | no | External user reference for the person who started the count. |
+| `posted_ledger_id` | UUID | yes | Ledger entry created when discrepancies are posted. |
+| `started_at` | timestamptz | no | Count start time. |
+| `posted_at` | timestamptz | yes | Posting time, present only after status becomes `POSTED`. |
+
+Key constraints and indexes:
+
+- Foreign key `container_id -> stock_container.id`.
+- Foreign key `posted_ledger_id -> stock_ledger.id`.
+- Index `(container_id, status)`.
+- At most one active stock take per container where status is `DRAFT` or `COUNTED`.
+
+Invariants:
+
+- `container_id` must reference a real, non-virtual container.
+- Posting a stock take creates a `STOCKTAKE` ledger entry for non-zero discrepancies.
+- If stock changed since the count snapshot, posting should return a stale-count conflict rather than silently applying old expected quantities.
+
+## `stock_take_line`
+
+Counted quantity for one SKU within a stock take.
+
+| Field | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | UUID | no | Primary key. |
+| `stock_take_id` | UUID | no | Parent stock take. |
+| `sku_id` | UUID | no | Counted SKU. |
+| `expected_quantity` | numeric | no | Projected balance when the count line was prepared. |
+| `counted_quantity` | numeric | no | Physical counted quantity. |
+| `discrepancy_quantity` | numeric | no | `counted_quantity - expected_quantity`. |
+| `reason_code` | varchar | yes | Required for material discrepancies. |
+| `notes` | text | yes | Optional count notes. |
+
+Key constraints and indexes:
+
+- Foreign key `stock_take_id -> stock_take.id`.
+- Foreign key `sku_id -> sku.id`.
+- Unique `(stock_take_id, sku_id)`.
+
+Invariants:
+
+- Counted quantities must satisfy the SKU's `min_increment`.
+- Posting converts non-zero discrepancies into balanced ledger lines against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`.
+
 ## Supporting Tables
 
 | Table | Purpose |
 | --- | --- |
 | `idempotency_record` | Stores request hash, status, and response for safe mobile/API retries. |
 | `outbox_event` | Stores committed integration events to publish asynchronously. |
-| `stock_take` | Stock audit session for one container. |
-| `stock_take_line` | Counted quantity, expected quantity, and discrepancy by SKU. |
 | `import_job` | Day-0 catalogue and stock import lifecycle. |
 | `import_row_error` | Row-level validation errors and warnings. |
 | `reorder_policy` | Min/target quantity rules. |
@@ -177,12 +228,8 @@ Invariants:
 
 Supporting table relationships:
 
-- `idempotency_record.movement_id -> stock_ledger.id` when a request posts a movement.
+- `idempotency_record.ledger_id -> stock_ledger.id` when a request posts a movement.
 - `outbox_event.aggregate_id -> stock_ledger.id` when publishing stock movement events.
-- `stock_take.container_id -> stock_container.id`.
-- `stock_take.posted_ledger_id -> stock_ledger.id` when discrepancies are posted.
-- `stock_take_line.stock_take_id -> stock_take.id`.
-- `stock_take_line.sku_id -> sku.id`.
 - `import_row_error.import_job_id -> import_job.id`.
 - `import_job.applied_ledger_id -> stock_ledger.id` when an initial load is applied as a ledger entry.
 - `reorder_policy.sku_id -> sku.id`.

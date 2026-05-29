@@ -9,3 +9,4 @@ erDiagram
     STOCK_CONTAINER ||--o{ STOCK_TAKE : audited_by
     STOCK_TAKE ||--o{ STOCK_TAKE_LINE : has
     SKU ||--o{ STOCK_TAKE_LINE : counted
+    STOCK_TAKE |o--o| STOCK_LEDGER : posts_discrepancy
