@@ -99,7 +99,8 @@ High-level resource groups:
 
 ### Idempotency-Key Generation
 
-Clients generate `Idempotency-Key` per logical mutation attempt. Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.
+Clients generate `Idempotency-Key` per logical mutation attempt. 
+Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.
 
 The key should be treated as opaque by the server.
 A UUIDv4 or UUIDv7 is sufficient, optionally prefixed for debugging, for example `mobile:{device_id}:{uuid}`. 
@@ -110,7 +111,8 @@ For synchronous writes, retrying with the same key returns the same created reso
 ### Global Ordered Queue
 
 An optional global ordered queue variant is described in `04-queue.md`. 
-It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
+It is optional because the MVP does not require globally ordered async processing: 
+PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
 The queue variant is useful if the product wants deterministic global command ordering, but it changes API semantics to `202 Accepted`, introduces pending/rejected command states, requires worker recovery, and makes stock writes eventually consistent.
 
 ## 5. Day-0 Population
