@@ -129,7 +129,7 @@ Invariants:
 
 ## `stock_ledger_line`
 
-Line-level quantity delta.
+Line-level quantity posting.
 
 | Field | Type | Null | Meaning |
 | --- | --- | --- | --- |
@@ -138,7 +138,8 @@ Line-level quantity delta.
 | `line_no` | integer | no | Stable order within movement. |
 | `sku_id` | UUID | no | Material item. |
 | `container_id` | UUID | no | Container affected. |
-| `quantity_delta` | numeric | no | Positive inbound, negative outbound. |
+| `quantity` | numeric | no | Absolute quantity posted. Always positive. |
+| `direction` | enum | no | `IN` increases the container/account balance; `OUT` decreases it. |
 | `unit_cost` | numeric | yes | Optional valuation data. |
 | `posted_at` | timestamptz | no | Copied from the ledger header for efficient historical queries. |
 | `metadata` | jsonb | yes | Batch, import row, supplier, notes. |
@@ -149,16 +150,18 @@ Key constraints and indexes:
 - Foreign key `ledger_id -> stock_ledger.id`.
 - Foreign key `sku_id -> sku.id`.
 - Foreign key `container_id -> stock_container.id`.
-- `quantity_delta <> 0`.
+- `quantity > 0`.
+- `direction in ('IN', 'OUT')`.
 - Index `(container_id, sku_id, posted_at)`.
 - Index `(sku_id, posted_at)`.
 
 Invariants:
 
-- Usage creates negative lines.
-- Receipt creates positive lines.
-- Transfer creates one negative source line and one positive destination line under the same ledger entry.
+- Usage creates an `OUT` line from the real container and an `IN` line to `WORK_ORDER_CONSUMED`.
+- Receipt creates an `IN` line to the destination container and an `OUT` line from `SUPPLIER_SOURCE`.
+- Transfer creates one `OUT` source line and one `IN` destination line under the same ledger entry.
 - For double-entry consistency, every movement also has a balancing line.
+- Balance impact is derived as `+quantity` for `IN` and `-quantity` for `OUT`.
 - Receipts balance against `SUPPLIER_SOURCE`, usage balances against `WORK_ORDER_CONSUMED`, adjustments balance against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`, and initial loads balance against `INITIAL_LOAD_SOURCE`.
 
 ## `stock_take`

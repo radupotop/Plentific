@@ -91,7 +91,7 @@ Rules:
 - Field Operative can consume only from an assigned van unless a manager overrides.
 - `container_id` must be a real container.
 - Quantities must be positive and valid for the SKU increment.
-- Internally, usage writes a negative line from the van and a positive balancing line to `WORK_ORDER_CONSUMED`, tagged with the work order reference.
+- Internally, usage writes an `OUT` line from the van and an `IN` balancing line to `WORK_ORDER_CONSUMED`, tagged with the work order reference.
 - If stock would fall below tolerance, return `409 INSUFFICIENT_STOCK`.
 
 ### Receive Stock
@@ -113,7 +113,7 @@ Rules:
 - Store Manager permission required.
 - Destination container must be active and real.
 - Quantities must be positive.
-- Internally, receipt writes a positive destination line and a negative balancing line from `SUPPLIER_SOURCE`.
+- Internally, receipt writes an `IN` destination line and an `OUT` balancing line from `SUPPLIER_SOURCE`.
 - Optional valuation data creates cost layers if enabled.
 
 ### Transfer Stock
@@ -136,7 +136,7 @@ Rules:
 - Operations Manager or Store Manager permission required.
 - Source and destination must be different real containers.
 - Source and destination balance rows are locked in deterministic order to reduce deadlocks.
-- One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.
+- One ledger entry contains both `OUT` source lines and `IN` destination lines. Since both sides are real containers, the transaction balances without a virtual container.
 
 ### Adjust Stock
 
@@ -148,7 +148,7 @@ Rules:
   "reason_code": "DAMAGED",
   "notes": "Cable roll damaged during loading.",
   "lines": [
-    { "sku_id": "cable-001", "quantity_delta": "-1.5", "unit": "metre" }
+    { "sku_id": "cable-001", "quantity": "1.5", "direction": "OUT", "unit": "metre" }
   ]
 }
 ```
@@ -158,8 +158,8 @@ Rules:
 - Manager permission required.
 - Reason is mandatory.
 - `container_id` must be a real container.
-- Negative adjustments respect tolerance unless an elevated override is explicitly allowed.
-- Negative adjustments balance against `ADJUSTMENT_LOSS`; positive adjustments balance against `ADJUSTMENT_GAIN`.
+- `OUT` adjustments respect tolerance unless an elevated override is explicitly allowed.
+- `OUT` adjustments balance against `ADJUSTMENT_LOSS`; `IN` adjustments balance against `ADJUSTMENT_GAIN`.
 
 ## Stock Takes
 
@@ -177,7 +177,7 @@ Rules:
 - `PUT /stock-takes/{stock_take_id}/lines/{sku_id}` adds or replaces the counted quantity for one SKU.
 - Posting is a lifecycle transition via `PATCH /stock-takes/{stock_take_id}` with `status: "POSTED"`, not an action endpoint.
 - Posting creates a `STOCKTAKE` ledger entry for discrepancies.
-- Positive discrepancies balance against `ADJUSTMENT_GAIN`; negative discrepancies balance against `ADJUSTMENT_LOSS`.
+- Positive discrepancies create `IN` lines balanced against `ADJUSTMENT_GAIN`; negative discrepancies create `OUT` lines balanced against `ADJUSTMENT_LOSS`.
 - If balances changed since the count was prepared, return `409 STOCK_TAKE_STALE`.
 
 ## Import Jobs
