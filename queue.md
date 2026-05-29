@@ -13,7 +13,7 @@ Add a durable `stock_command` concept before the ledger:
 1. API receives a stock-changing request.
 2. API validates basic request shape, permissions, idempotency key, and referenced resources where possible.
 3. API writes a `PENDING` command with a monotonically increasing `sequence_number`.
-4. API returns `202 Accepted` with `command_id`.
+4. API returns `202 Accepted` with a UUID `command_id`.
 5. A single active worker processes commands in `sequence_number` order.
 6. Worker posts the double-entry `stock_ledger` entry and updates `stock_balance` inside one PostgreSQL transaction.
 7. Worker marks the command `POSTED` or `REJECTED`.
@@ -69,13 +69,13 @@ POST /stock-takes
 POST /import-jobs
 ```
 
-return `202 Accepted` instead of immediately returning a posted movement.
+return `202 Accepted` instead of immediately returning a posted movement. The response always includes a UUID `command_id`, which becomes the client-visible tracking handle for polling, retries, and UI state.
 
 Example response:
 
 ```json
 {
-  "command_id": "cmd-123",
+  "command_id": "4f4a2c32-5f53-4d56-9dc6-0df510ddf178",
   "status": "PENDING",
   "sequence_number": 1042
 }
@@ -92,10 +92,10 @@ Example posted command:
 
 ```json
 {
-  "command_id": "cmd-123",
+  "command_id": "4f4a2c32-5f53-4d56-9dc6-0df510ddf178",
   "status": "POSTED",
   "sequence_number": 1042,
-  "ledger_id": "ledger-789"
+  "ledger_id": "8a758c35-b3cf-4d94-9d6e-059c4b7ad0b7"
 }
 ```
 
@@ -103,7 +103,7 @@ Example rejected command:
 
 ```json
 {
-  "command_id": "cmd-124",
+  "command_id": "2e193588-f4cb-4713-911e-0d77b061e999",
   "status": "REJECTED",
   "sequence_number": 1043,
   "rejection": {

@@ -2,7 +2,7 @@
 
 The API is REST-oriented around the main resources while keeping typed transaction resources for business clarity. Each typed transaction resource creates one immutable `stock_ledger` entry underneath.
 
-All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
+All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header. Successful mutating endpoints return the UUID of the created or updated resource so clients have a stable handle for retries, polling, audit, and UI state.
 
 ## Catalogue and Containers
 
@@ -56,9 +56,19 @@ Rules:
 
 - `stock_ledger` is immutable and remains the canonical audit record.
 - Typed transaction resources are command-like resource creations that create a posted ledger entry.
-- Each successful typed `POST` returns the typed resource identifier and the underlying `ledger_id`.
+- Each successful typed `POST` returns the typed resource UUID and the underlying `ledger_id`.
 - All transaction resources create balanced double-entry ledger lines.
 - Audit access to `stock-ledger-entries` may include virtual containers; operational APIs do not.
+
+Example successful transaction response:
+
+```json
+{
+  "id": "4f4a2c32-5f53-4d56-9dc6-0df510ddf178",
+  "ledger_id": "8a758c35-b3cf-4d94-9d6e-059c4b7ad0b7",
+  "status": "POSTED"
+}
+```
 
 ### Record Usage
 
@@ -163,6 +173,7 @@ PUT   /stock-takes/{stock_take_id}/lines/{sku_id}
 Rules:
 
 - `POST /stock-takes` creates a stock take for one real container.
+- `POST /stock-takes` returns the created `stock_take_id`.
 - `PUT /stock-takes/{stock_take_id}/lines/{sku_id}` adds or replaces the counted quantity for one SKU.
 - Posting is a lifecycle transition via `PATCH /stock-takes/{stock_take_id}` with `status: "POSTED"`, not an action endpoint.
 - Posting creates a `STOCKTAKE` ledger entry for discrepancies.
@@ -180,6 +191,7 @@ PATCH /import-jobs/{import_job_id}
 Rules:
 
 - Import jobs support day-0 catalogue, container, stock quantity, and optional cost layer import.
+- `POST /import-jobs` returns the created `import_job_id`.
 - The import lifecycle is represented by status transitions such as `VALIDATED`, `APPROVED`, `APPLYING`, and `APPLIED`.
 - Approval and apply are `PATCH` status transitions, not `/approve` or `/apply` action endpoints.
 - Applying an import creates `INITIAL_LOAD` ledger entries balanced against `INITIAL_LOAD_SOURCE`.

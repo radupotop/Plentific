@@ -342,6 +342,7 @@ High-level resource groups:
 Important API rules:
 
 - All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
+- Mutating endpoints return a UUID handle: either the created resource ID for synchronous writes or `command_id` for queued writes.
 - `stock_balance` is read-only through the API; clients never directly create or update balances.
 - Typed transaction resources create immutable balanced `stock_ledger` entries.
 - Operational APIs expose only real containers and physical stock. Audit/admin ledger APIs may expose virtual containers.
