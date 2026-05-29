@@ -53,13 +53,18 @@ Every stock-changing operation creates a balanced `stock_ledger` entry:
 - Adjustments balance real stock against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`.
 - Day-0 imports balance real stock against `INITIAL_LOAD_SOURCE`.
 
-Real stock is physical inventory that can be counted, transferred, reserved, or used by operatives. Virtual stock is not available inventory; it only explains where stock came from or went in the ledger.
+*Real stock* is physical inventory that can be counted, transferred, reserved, or used by operatives. 
+
+*Virtual stock* is not available inventory; it only explains where stock came from or went in the ledger.
+
+These virtual containers act like source, sink, or contra-style accounts for inventory movements. 
+For MVP keep the terminology as virtual containers because this is operational stock management, not a general ledger. If valuation/accounting becomes important, the virtual containers can be mapped to formal contra accounts such as consumed inventory, shrinkage/write-off, and adjustment gain/loss.
 
 Important invariants:
 
 - `stock_balance` exists only for real containers.
 - `stock_balance` must be derivable from `stock_ledger_line`.
-- Every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
+- Every posted ledger transaction must balance to zero per SKU across real and virtual containers.
 - Posted ledger entries are immutable; corrections are new movements.
 
 Full ERD, fields, constraints, indexes, and ledger/balance trade-offs are in `02-data-model.md`.
