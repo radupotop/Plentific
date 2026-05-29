@@ -267,7 +267,8 @@ MVP → v2 plan, including what you would defer while keeping an evolutionary pa
 <li>Stock takes, adjustments, transfers, receipts, work-order usage, day-0 imports, and reorder requests.</li>
 <li>Optional cost layers for FIFO/LIFO valuation.</li>
 </ul>
-<p>It does not own WorkOrder, Location, user identity, vehicle assignment, or full procurement lifecycle. Those remain external services referenced by IDs such as <code>work_order_ref</code>, <code>location_ref</code>, <code>vehicle_ref</code>, and <code>user_ref</code>.</p>
+<p>It does not own WorkOrder, Location, user identity, vehicle assignment, or full procurement lifecycle.</p>
+<p>Those remain external services referenced by IDs such as <code>work_order_ref</code>, <code>location_ref</code>, <code>vehicle_ref</code>, and <code>user_ref</code>.</p>
 <h2 id="3-core-model">3. Core Model</h2>
 <p>Inventory changes are represented as an append-only double-entry ledger.</p>
 <p>Every stock-changing operation creates a balanced <code>stock_ledger</code> entry:</p>
@@ -281,8 +282,8 @@ MVP → v2 plan, including what you would defer while keeping an evolutionary pa
 <p>For readability, the ledger header also stores <code>source_ref</code> and <code>destination_ref</code>. 
 These make it easy to see where a movement came from and where it went, for example <code>warehouse-1 -&gt; van-1</code> or <code>van-1 -&gt; WORK_ORDER_CONSUMED</code>. 
 The detailed <code>stock_ledger_line</code> rows remain authoritative for balances and double-entry validation.</p>
-<p><em>Real stock</em> is physical inventory that can be counted, transferred, reserved, or used by operatives. </p>
-<p><em>Virtual stock</em> is not available inventory; it only explains where stock came from or went in the ledger.</p>
+<p><strong>Real stock</strong> is physical inventory that can be counted, transferred, reserved, or used by operatives. </p>
+<p><strong>Virtual stock</strong> is not available inventory; it only explains where stock came from or went in the ledger.</p>
 <p>These virtual containers act like source, sink, or contra accounts for inventory movements. 
 For MVP keep the terminology as virtual containers because this is operational stock management, not a general ledger. 
 If valuation/accounting becomes important, the virtual containers can be mapped to formal contra accounts such as consumed inventory, shrinkage/write-off, and adjustment gain/loss.</p>
