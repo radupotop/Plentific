@@ -1445,7 +1445,14 @@ outbox_event  = integration event after commit
 <li><code>ledger_id</code>: posted ledger UUID once the command is <code>POSTED</code>.</li>
 <li><code>rejection</code>: structured rejection details if the command is <code>REJECTED</code>.</li>
 </ul>
-<h3 id="recommended-flow">Recommended flow:</h3>
+<h3 id="the-flow">The flow:</h3>
+<ul>
+<li>User records stock usage while offline.</li>
+<li>App persists local outbox item and idempotency key before any network attempt.</li>
+<li>When online, app submits with Idempotency-Key.</li>
+<li>Server returns command_id.</li>
+<li>App stores command_id and polls until POSTED or REJECTED.</li>
+</ul>
 <pre><code class="language-text">operative records stock usage offline
   -&gt; app writes local outbox item with Idempotency-Key
   -&gt; app submits when connectivity returns
