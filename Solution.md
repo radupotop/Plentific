@@ -328,149 +328,25 @@ Recommended model:
 
 ## 5. API Design
 
-All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
+The detailed endpoint catalogue is kept in `endpoints.md`. 
 
-### Record usage on a work order
+The API is REST-oriented around main resources while keeping typed transaction resources for business clarity.
 
-`POST /stock-usages`
+High-level resource groups:
 
-```json
-{
-  "work_order_ref": "WO-12345",
-  "container_id": "van-1",
-  "operative_ref": "user-100",
-  "lines": [
-    { "sku_id": "screw-001", "quantity": "3", "unit": "each" },
-    { "sku_id": "cable-001", "quantity": "2.4", "unit": "metre" }
-  ]
-}
-```
+- Catalogue and containers: `/skus`, `/stock-containers`.
+- Physical stock views: `/stock-balances`, `/stock-containers/{id}/balances`, `/skus/{id}/balances`.
+- Ledger and typed transactions: `/stock-ledger-entries`, `/stock-usage-records`, `/stock-receipts`, `/stock-transfers`, `/stock-adjustments`.
+- Operational workflows: `/stock-takes`, `/import-jobs`, `/reorder-policies`, `/reorder-requests`.
 
-Rules:
+Important API rules:
 
-- Field Operative can consume only from an assigned van unless a manager overrides.
-- WorkOrder is validated against a local stub or external service, depending on availability strategy.
-- Quantities must be positive and valid for the SKU increment.
-- The requested `container_id` must be a real container.
-- Internally, usage writes a negative line from the van and a positive balancing line to `WORK_ORDER_CONSUMED`, tagged with the work order reference.
-- If stock would fall below tolerance, return `409 INSUFFICIENT_STOCK`.
-
-### Receive stock
-
-`POST /stock-receipts`
-
-```json
-{
-  "destination_container_id": "warehouse-1",
-  "purchase_order_ref": "PO-9001",
-  "lines": [
-    { "sku_id": "screw-001", "quantity": "100", "unit": "each", "unit_cost": "0.04" }
-  ]
-}
-```
-
-Rules:
-
-- Store Manager permission required.
-- Destination container must be active.
-- Destination container must be real.
-- Quantities are positive.
-- Internally, receipt writes a positive destination line and a negative balancing line from `SUPPLIER_SOURCE`.
-- Optional valuation data creates cost layers if enabled.
-
-### Transfer stock
-
-`POST /stock-transfers`
-
-```json
-{
-  "source_container_id": "warehouse-1",
-  "destination_container_id": "van-1",
-  "reason_code": "VAN_REPLENISHMENT",
-  "lines": [
-    { "sku_id": "screw-001", "quantity": "25", "unit": "each" }
-  ]
-}
-```
-
-Rules:
-
-- Operations Manager or Store Manager permission required.
-- Source and destination must be different real containers.
-- Source and destination balance rows are locked in deterministic order to reduce deadlocks.
-- One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.
-
-### Adjust stock
-
-`POST /stock-adjustments`
-
-```json
-{
-  "container_id": "van-1",
-  "reason_code": "DAMAGED",
-  "notes": "Cable roll damaged during loading.",
-  "lines": [
-    { "sku_id": "cable-001", "quantity_delta": "-1.5", "unit": "metre" }
-  ]
-}
-```
-
-Rules:
-
-- Manager permission required.
-- Reason is mandatory.
-- The requested `container_id` must be a real container.
-- Negative adjustments respect tolerance unless an elevated override is explicitly allowed.
-- Internally, negative adjustments balance against `ADJUSTMENT_LOSS`; positive adjustments balance against `ADJUSTMENT_GAIN`.
-
-### Stock queries
-
-```text
-GET /stock-levels?sku_id=screw-001
-GET /containers/{container_id}/stock-levels
-GET /containers/{container_id}/stock-levels/history?at=2026-05-28T09:00:00Z
-```
-
-Current operational reads use `stock_balance` and return only real-container on-hand stock. Historical operational reads also exclude virtual containers unless an explicit audit/reporting endpoint requests full ledger postings. Historical reads use snapshots plus ledger deltas, or direct ledger aggregation for small ranges.
-
-### Stock take
-
-```text
-POST /stock-takes
-POST /stock-takes/{id}/lines
-POST /stock-takes/{id}/post
-```
-
-Posting a stock take creates a `STOCKTAKE` ledger entry for discrepancies. Positive discrepancies balance against `ADJUSTMENT_GAIN`; negative discrepancies balance against `ADJUSTMENT_LOSS`. If balances changed since the count was prepared, return `409 STOCK_TAKE_STALE` with current expected quantities.
-
-### Day-0 import
-
-```text
-POST /imports/initial-stock
-GET  /imports/{id}
-POST /imports/{id}/approve
-POST /imports/{id}/apply
-```
-
-The import flow supports CSV or API payloads for:
-
-- Initial catalogue items.
-- Containers and storage locations.
-- Initial stock quantities per container.
-- Optional initial cost layers.
-
-The apply step creates `INITIAL_LOAD` ledger entries balanced against `INITIAL_LOAD_SOURCE`. It does not directly edit balances.
-
-### Error semantics
-
-| Status | Meaning |
-| --- | --- |
-| `400` | Invalid body, unit, quantity, increment, or missing reason. |
-| `401/403` | Authentication or permission failure. |
-| `404` | Unknown SKU/container/external reference when strict validation is enabled. |
-| `409` | Business conflict: insufficient stock, stale stocktake, idempotency conflict. |
-| `422` | Import parsed but contains validation errors. |
-| `202` | Async import accepted. |
+- All mutating endpoints require authorization, permission checks, and an `Idempotency-Key` header.
+- `stock_balance` is read-only through the API; clients never directly create or update balances.
+- Typed transaction resources create immutable balanced `stock_ledger` entries.
+- Operational APIs expose only real containers and physical stock. Audit/admin ledger APIs may expose virtual containers.
+- Lifecycle changes such as posting a stock take or approving/applying an import are represented as `PATCH` status transitions, not action endpoints.
+- Business conflicts return `409`, for example insufficient stock, stale stock take, invalid lifecycle transition, or idempotency conflict.
 
 ## 6. Day-0 Population
 
