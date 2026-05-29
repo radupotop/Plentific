@@ -101,6 +101,8 @@ Immutable movement header.
 | --- | --- | --- | --- |
 | `id` | UUID | no | Primary key. |
 | `movement_type` | enum | no | `USAGE`, `RECEIPT`, `TRANSFER`, `ADJUSTMENT`, `STOCKTAKE`, `INITIAL_LOAD`, `RETURN`. |
+| `source_ref` | varchar | yes | Human-readable source container/account for the movement, e.g. `warehouse-1` or `SUPPLIER_SOURCE`. |
+| `destination_ref` | varchar | yes | Human-readable destination container/account for the movement, e.g. `van-1` or `WORK_ORDER_CONSUMED`. |
 | `external_ref_type` | varchar | yes | `WORK_ORDER`, `PURCHASE_ORDER`, `IMPORT_JOB`, etc. |
 | `external_ref` | varchar | yes | External ID. |
 | `reason_code` | varchar | yes | Required for adjustments and discrepancy corrections. |
@@ -121,6 +123,7 @@ Invariants:
 - Corrections are represented by new adjustment movements.
 - Every ledger entry has at least two lines.
 - Posted ledger entries must balance to zero per SKU/unit across their lines.
+- `source_ref` and `destination_ref` are denormalized readability fields; `stock_ledger_line` remains authoritative for balance calculation.
 
 ## `stock_ledger_line`
 

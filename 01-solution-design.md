@@ -53,6 +53,10 @@ Every stock-changing operation creates a balanced `stock_ledger` entry:
 - Adjustments balance real stock against `ADJUSTMENT_GAIN` or `ADJUSTMENT_LOSS`.
 - Day-0 imports balance real stock against `INITIAL_LOAD_SOURCE`.
 
+For readability, the ledger header also stores `source_ref` and `destination_ref`. 
+These make it easy to see where a movement came from and where it went, for example `warehouse-1 -> van-1` or `van-1 -> WORK_ORDER_CONSUMED`. 
+The detailed `stock_ledger_line` rows remain authoritative for balances and double-entry validation.
+
 *Real stock* is physical inventory that can be counted, transferred, reserved, or used by operatives. 
 
 *Virtual stock* is not available inventory; it only explains where stock came from or went in the ledger.
