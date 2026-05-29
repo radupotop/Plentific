@@ -1,0 +1,1449 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock and Materials Management</title>
+  <style>
+    body {
+      color: #17202a;
+      font-family: Georgia, 'Times New Roman', serif;
+      line-height: 1.55;
+      margin: 0 auto;
+      max-width: 980px;
+      padding: 32px 24px 64px;
+    }
+    nav {
+      background: #f6f1e8;
+      border: 1px solid #e0d3bf;
+      border-radius: 10px;
+      margin: 24px 0 36px;
+      padding: 16px 20px;
+    }
+    nav ul { margin: 0; padding-left: 22px; }
+    section { border-top: 1px solid #dedede; padding-top: 28px; }
+    h1, h2, h3 { line-height: 1.2; }
+    code {
+      background: #f3f4f4;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      padding: 0.1em 0.25em;
+    }
+    pre {
+      background: #111827;
+      border-radius: 10px;
+      color: #f9fafb;
+      overflow-x: auto;
+      padding: 16px;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    table { border-collapse: collapse; display: block; overflow-x: auto; width: 100%; }
+    th, td { border: 1px solid #d3d7dc; padding: 8px 10px; text-align: left; }
+    th { background: #eef2f6; }
+    blockquote { border-left: 4px solid #bcc7d3; color: #475569; margin-left: 0; padding-left: 16px; }
+    .source-file { color: #64748b; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Stock and Materials Management</h1>
+    <p>Generated from numbered Markdown files.</p>
+  </header>
+  <nav>
+    <strong>Contents</strong>
+    <ul>
+      <li><a href="#00-challenge">00-challenge.md</a></li>
+<li><a href="#01-solution-design">01-solution-design.md</a></li>
+<li><a href="#02-data-model">02-data-model.md</a></li>
+<li><a href="#03-endpoints">03-endpoints.md</a></li>
+<li><a href="#04-queue">04-queue.md</a></li>
+    </ul>
+  </nav>
+  <section id="00-challenge">
+<p class="source-file">00-challenge.md</p>
+<h2 id="context">Context</h2>
+<p>You are joining a B2B work order management platform.
+Field operatives complete work orders on a mobile app. 
+Many operatives use the system concurrently during the workday.</p>
+<p>We want to introduce a new Stock &amp; Materials Management module to track materials held in:
+* Vehicles (vans) assigned to 1–2 operatives
+* Storage sites (e.g. warehouse, workshop)</p>
+<p>Operatives must be able to record materials used on a work order.
+Managers must be able to purchase, receive, transfer, adjust, audit, and reorder stock.</p>
+<p>This module must integrate with existing platform concepts:
+* WorkOrder (existing)
+* Location (existing; represents properties/sites)</p>
+<h2 id="existing-architecture">Existing architecture</h2>
+<ul>
+<li>The platform uses Django microservices.</li>
+<li>WorkOrders and Locations are managed by separate microservices.</li>
+<li>We deploy Django and Django Rest Framework with Gunicorn.</li>
+<li>PostgreSQL serves as the primary DBMS for Django.</li>
+<li>RabbitMQ acts as the Celery backend for asynchronous tasks.</li>
+<li>AWS SNS propagates events between microservices.</li>
+</ul>
+<h2 id="epic-materials-visibility-and-usage-tracking-user-stories">Epic: "Materials visibility and usage tracking" - User stories</h2>
+<ol>
+<li>Record usage on a work order</li>
+<li>As a field operative, I want to record materials used (e.g. 3 screws, 2m
+cable) from my van while completing a work order, so the job record is
+accurate.</li>
+<li>Manage stock in containers</li>
+<li>As an operations manager, I want to view current stock levels per vehicle and
+storage site, and overall.</li>
+<li>Receive stock</li>
+<li>As a store manager, I want to receive goods into a storage site (and optionally
+allocate to vehicles).</li>
+<li>Transfer stock</li>
+<li>As an operations manager, I want to transfer materials between vehicles and
+storage sites.</li>
+<li>Correct discrepancies</li>
+<li>As a manager, I want to adjust stock levels (with a reason).</li>
+<li>Audit / stock take</li>
+<li>As a manager, I want to perform a stock take for a container and record
+discrepancies.</li>
+<li>Reorder</li>
+<li>As a manager, I want low stock alerts and the ability to create purchase
+orders or reorder requests.</li>
+</ol>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<p>Candidates should interpret and expand these; this isn't exhaustive.
+Materials usage
+* Operative can add multiple line items to a work order usage record.
+* Quantities must support tracking methods:
+  - container-level (e.g. "1 box consumed")
+  - unit-level (e.g. "12 screws consumed")
+  - continuous (e.g. "2.4 metres consumed", with minimum increments)
+* Must prevent negative stock beyond a defined tolerance (candidate to propose approach and assumptions).</p>
+<h2 id="stock-levels">Stock levels</h2>
+<ul>
+<li>Must support "on-hand" (and allow later extension for "reserved").</li>
+<li>Must answer queries:</li>
+<li>stock levels for all containers (per SKU)</li>
+<li>stock levels for one container at time T</li>
+<li>Must handle concurrent usage updates safely.</li>
+</ul>
+<h2 id="cost-accounting-stretch">Cost accounting (stretch)</h2>
+<ul>
+<li>Support FIFO or LIFO for cost valuation where items are purchased in lots/batches at
+different prices and consumed per unit.</li>
+</ul>
+<h2 id="performance">Performance</h2>
+<ul>
+<li>Typical workday: hundreds of concurrent users, thousands of movements/day.</li>
+<li>Stock lookups must be fast enough for mobile UX.</li>
+<li>Historical reporting should not degrade OLTP performance.</li>
+</ul>
+<h2 id="design-for-evolution">Design for evolution</h2>
+<p>The design should support likely future requirements without large refactors. Examples:
+* reservations/allocations
+* returns
+* richer approvals/procurement lifecycle
+* additional container types (e.g. lockers)</p>
+<h2 id="day-0-population-mandatory">Day-0 population (mandatory)</h2>
+<p>The design must consider how a new client begins using the module with existing stock
+already in vans/sites:
+* initial catalogue/catalogue items availability
+* initial inventory quantities (possibly per container)
+* optional initial valuation/cost layers
+* validation, auditing, and reconciliation for initial load
+* operationally feasible import process (e.g. CSV, API, admin tool)</p>
+<h2 id="candidate-deliverables-mandatory">Candidate deliverables (mandatory)</h2>
+<p>Provide a written response (2–8 pages) plus diagrams. You may choose REST or
+RPC.</p>
+<ol>
+<li>Qualifying questions + assumptions</li>
+<li>We won't answer questions during the exercise.</li>
+<li>
+<p>Write the questions you would ask and the assumptions you proceed with
+(briefly), including risks.</p>
+</li>
+<li>
+<p>Proposed architecture</p>
+</li>
+<li>How this module fits into an existing backend</li>
+<li>Boundaries: services/modules, responsibilities</li>
+<li>Transaction boundaries, idempotency, failure handling</li>
+<li>
+<p>Design choices that enable evolution without rewrites</p>
+</li>
+<li>
+<p>Data model package (MANDATORY)</p>
+</li>
+</ol>
+<p>Provide both:
+A) Entity Relationship Diagram (ERD)
+* Must be included (Mermaid is fine)
+* Should cover core entities and key relationships
+* Show cardinalities</p>
+<p>B) Field-level descriptions</p>
+<p>For each entity/table, list:
+* fields, types, nullability
+* what the field means and how it's used
+* key constraints and indexes you recommend
+* important invariants (e.g. non-negative rules, unique keys)</p>
+<p>Also explain trade-offs between ledger-only vs persisted balances vs materialised views/snapshots.</p>
+<ol>
+<li>API design
+Design a small set of endpoints, e.g.:</li>
+<li>record usage on a work order</li>
+<li>receive stock</li>
+<li>transfer stock</li>
+<li>adjust stock</li>
+<li>query stock levels (container + global)</li>
+<li>day-0 import / initialisation flows (could be async)
+Include:
+request/response shapes</li>
+<li>validation rules</li>
+<li>idempotency strategy (mobile retries)</li>
+<li>
+<p>error semantics (what clients receive on conflicts)</p>
+</li>
+<li>
+<p>Migration and rollout plan
+Assume:</p>
+</li>
+<li>WorkOrders and Locations already exist</li>
+<li>module ships incrementally behind feature flags
+Cover:</li>
+<li>schema migration approach (safe, reversible)</li>
+<li>any backfills required</li>
+<li>rollout plan with monitoring</li>
+<li>
+<p>day-0 onboarding steps and operational tooling required</p>
+</li>
+<li>
+<p>Non-functional considerations
+Explicitly cover:</p>
+</li>
+<li>concurrency control strategy (locking, optimistic concurrency, isolation)</li>
+<li>scalability (indexes, partitioning, read models)</li>
+<li>reliability (retries, idempotency, outbox/events where needed)</li>
+<li>
+<p>observability (metrics, invariants, alerts)</p>
+</li>
+<li>
+<p>Phase plan (nice-to-have)
+MVP → v2 plan, including what you would defer while keeping an evolutionary path.</p>
+</li>
+</ol>
+</section>
+<section id="01-solution-design">
+<p class="source-file">01-solution-design.md</p>
+<h1 id="stock-and-materials-management-design">Stock and Materials Management Design</h1>
+<h2 id="1-questions-and-assumptions">1. Questions and Assumptions</h2>
+<p>Questions:</p>
+<ul>
+<li>Do operatives need to record usage offline, or can stock commits require connectivity?</li>
+<li>Can stock ever go negative operationally, for example because a van count is stale?</li>
+<li>Does procurement already exist elsewhere, or should this module own purchase orders?</li>
+<li>Are WorkOrder, Location, vehicle, and user identifiers globally unique across services?</li>
+<li>Is FIFO/LIFO cost valuation needed in MVP, or only later?</li>
+<li>Do stock adjustments, transfers, and stock takes require approval workflows?</li>
+</ul>
+<p>Assumptions:</p>
+<ul>
+<li>The MVP focuses on quantity accuracy, auditability, and fast stock lookup.</li>
+<li>WorkOrders and Locations remain owned by existing services.</li>
+<li>This module stores external references and may keep local read-model stubs from SNS events.</li>
+<li>PostgreSQL is the source of truth; RabbitMQ/Celery/SNS are delivery mechanisms.</li>
+<li>Stock cannot go negative by default. A SKU-level or system-level tolerance can allow controlled exceptions.</li>
+</ul>
+<p>Main risks:</p>
+<ul>
+<li>Offline mobile usage can create conflicts when devices sync later.</li>
+<li>Day-0 stock data may be incomplete or inaccurate.</li>
+<li>Historical reporting over raw ledger tables can degrade OLTP performance.</li>
+<li>Synchronous validation against external services can reduce stock-service availability.</li>
+</ul>
+<h2 id="2-architecture">2. Architecture</h2>
+<p>Introduce a dedicated Django/DRF service called <code>stock-management</code>.</p>
+<p>It owns:</p>
+<ul>
+<li>SKUs, unit rules, and increment validation.</li>
+<li>Real stock containers such as vans, warehouses, workshops, lockers, and bins.</li>
+<li>Virtual accounting containers used only by the ledger.</li>
+<li>Immutable stock ledger entries and current stock balances.</li>
+<li>Stock takes, adjustments, transfers, receipts, work-order usage, day-0 imports, and reorder requests.</li>
+<li>Optional cost layers for FIFO/LIFO valuation.</li>
+</ul>
+<p>It does not own WorkOrder, Location, user identity, vehicle assignment, or full procurement lifecycle. Those remain external services referenced by IDs such as <code>work_order_ref</code>, <code>location_ref</code>, <code>vehicle_ref</code>, and <code>user_ref</code>.</p>
+<h2 id="3-core-model">3. Core Model</h2>
+<p>Inventory changes are represented as an append-only double-entry ledger.</p>
+<p>Every stock-changing operation creates a balanced <code>stock_ledger</code> entry:</p>
+<ul>
+<li>Receipts balance real stock against <code>SUPPLIER_SOURCE</code>.</li>
+<li>Work-order usage balances a van against <code>WORK_ORDER_CONSUMED</code>.</li>
+<li>Transfers balance one real container against another real container.</li>
+<li>Adjustments balance real stock against <code>ADJUSTMENT_GAIN</code> or <code>ADJUSTMENT_LOSS</code>.</li>
+<li>Day-0 imports balance real stock against <code>INITIAL_LOAD_SOURCE</code>.</li>
+</ul>
+<p>For readability, the ledger header also stores <code>source_ref</code> and <code>destination_ref</code>. 
+These make it easy to see where a movement came from and where it went, for example <code>warehouse-1 -&gt; van-1</code> or <code>van-1 -&gt; WORK_ORDER_CONSUMED</code>. 
+The detailed <code>stock_ledger_line</code> rows remain authoritative for balances and double-entry validation.</p>
+<p><em>Real stock</em> is physical inventory that can be counted, transferred, reserved, or used by operatives. </p>
+<p><em>Virtual stock</em> is not available inventory; it only explains where stock came from or went in the ledger.</p>
+<p>These virtual containers act like source, sink, or contra accounts for inventory movements. 
+For MVP keep the terminology as virtual containers because this is operational stock management, not a general ledger. 
+If valuation/accounting becomes important, the virtual containers can be mapped to formal contra accounts such as consumed inventory, shrinkage/write-off, and adjustment gain/loss.</p>
+<p>Important invariants:</p>
+<ul>
+<li><code>stock_balance</code> exists only for real containers.</li>
+<li><code>stock_balance</code> must be derivable from <code>stock_ledger_line</code>.</li>
+<li>Every posted ledger transaction must balance to zero per SKU across real and virtual containers.</li>
+<li>Posted ledger entries are immutable; corrections are new movements.</li>
+</ul>
+<p>Full ERD, fields, constraints, indexes, and ledger/balance trade-offs are in <code>02-data-model.md</code>.</p>
+<h2 id="4-api-design">4. API Design</h2>
+<p>The API is REST-oriented around main resources while keeping typed transaction resources for business clarity. Full endpoint details are in <code>03-endpoints.md</code>.</p>
+<p>High-level resource groups:</p>
+<ul>
+<li>Catalogue and containers: <code>/skus</code>, <code>/stock-containers</code>.</li>
+<li>Physical stock views: <code>/stock-balances</code>, <code>/stock-containers/{id}/balances</code>, <code>/skus/{id}/balances</code>.</li>
+<li>Ledger and typed transactions: <code>/stock-ledger-entries</code>, <code>/stock-usage-records</code>, <code>/stock-receipts</code>, <code>/stock-transfers</code>, <code>/stock-adjustments</code>.</li>
+<li>Workflows: <code>/stock-takes</code>, <code>/import-jobs</code>, <code>/reorder-policies</code>, <code>/reorder-requests</code>.</li>
+</ul>
+<p>API rules:</p>
+<ul>
+<li>All mutating endpoints require authorization, permission checks, and an <code>Idempotency-Key</code>.</li>
+<li>Mutating endpoints return a UUID handle.</li>
+<li><code>stock_balance</code> is read-only through the API.</li>
+<li>Operational APIs expose only real containers and physical stock.</li>
+<li>Audit/admin ledger APIs may expose virtual containers.</li>
+<li>Lifecycle changes use <code>PATCH</code> status transitions, not action endpoints.</li>
+<li>Business conflicts return <code>409</code>.</li>
+</ul>
+<h3 id="global-ordered-queue">Global Ordered Queue</h3>
+<p>An optional global ordered queue variant is described in <code>04-queue.md</code>. 
+It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
+The queue variant is useful if the product wants deterministic global command ordering, but it changes API semantics to <code>202 Accepted</code>, introduces pending/rejected command states, requires worker recovery, and makes stock writes eventually consistent.</p>
+<h2 id="5-day-0-population">5. Day-0 Population</h2>
+<p>Day-0 population is mandatory because customers already have stock in vans and sites.</p>
+<p>Recommended process:</p>
+<ol>
+<li>Upload catalogue, containers, quantities, and optional cost layers by CSV/API.</li>
+<li>Validate asynchronously and produce a dry-run report.</li>
+<li>Show row-level errors and warnings.</li>
+<li>Require manager/admin approval.</li>
+<li>Apply the import as <code>INITIAL_LOAD</code> ledger entries.</li>
+<li>Produce a reconciliation report by SKU and container.</li>
+<li>Prevent duplicate initial loads unless explicitly marked as correction imports.</li>
+</ol>
+<p>Initial quantities must enter through the same ledger path as every other mutation. They should not be inserted directly into <code>stock_balance</code>.</p>
+<h2 id="6-migration-and-rollout">6. Migration and Rollout</h2>
+<p>Use additive schema migrations in the new <code>stock-management</code> service. Do not change existing WorkOrder or Location tables.</p>
+<p>Rollout plan:</p>
+<ol>
+<li>Deploy schema, service, and feature flags.</li>
+<li>Enable catalogue and container admin for internal users.</li>
+<li>Run day-0 import dry runs for a pilot customer/site.</li>
+<li>Enable receipts and current stock views.</li>
+<li>Enable transfers and manager adjustments.</li>
+<li>Enable work-order usage for a small operative group, initially requiring online commits.</li>
+<li>Add stock takes and reorder policies once stock data quality is stable.</li>
+</ol>
+<p>Backfills:</p>
+<ul>
+<li>Create container records from existing vehicles and storage locations.</li>
+<li>Subscribe to WorkOrder, Location, vehicle, and operative-assignment events.</li>
+<li>Import starting stock through the day-0 workflow.</li>
+<li>Reconcile imported totals with customer sign-off totals.</li>
+</ul>
+<h2 id="7-non-functional-considerations">7. Non-Functional Considerations</h2>
+<p>Concurrency:</p>
+<ul>
+<li>Default model uses PostgreSQL row-level locks on affected <code>stock_balance</code> rows.</li>
+<li>Lock rows in deterministic order.</li>
+<li>Keep transactions short.</li>
+<li>Use optimistic <code>version</code> fields only for stale-read detection, not decrement correctness.</li>
+</ul>
+<p>Reliability:</p>
+<ul>
+<li>Use idempotency records for safe mobile/API retries.</li>
+<li>Use the outbox pattern for SNS/RabbitMQ publishing.</li>
+<li>Queue consumers must be idempotent because delivery is at-least-once.</li>
+<li>Reconciliation jobs compare ledger-derived totals against <code>stock_balance</code>.</li>
+</ul>
+<p>Scalability:</p>
+<ul>
+<li>Current stock reads use <code>stock_balance</code>.</li>
+<li>Historical reporting uses snapshots, read replicas, or analytical exports.</li>
+<li>Movement tables can be partitioned by <code>posted_at</code> later.</li>
+<li>Reorder checks and imports can run asynchronously.</li>
+</ul>
+<p>Observability:</p>
+<ul>
+<li>Track movement counts, mutation latency, lock wait time, insufficient-stock conflicts, negative balances, outbox lag, import errors, and ledger/balance mismatches.</li>
+<li>Alert on balances below tolerance, reconciliation mismatch, outbox backlog, import apply failures, and elevated conflict rates.</li>
+</ul>
+<h2 id="8-mvp-to-v2">8. MVP to v2</h2>
+<p>MVP:</p>
+<ul>
+<li>SKU catalogue with unit and increment rules.</li>
+<li>Real and virtual stock containers.</li>
+<li>Double-entry stock ledger.</li>
+<li>Transactional stock balances.</li>
+<li>Work-order usage, receipts, transfers, adjustments, current stock queries.</li>
+<li>Day-0 import with validation and approval.</li>
+<li>Basic stock take and discrepancy posting.</li>
+<li>Outbox events and core monitoring.</li>
+</ul>
+<p>v2:</p>
+<ul>
+<li>Reservations and allocations.</li>
+<li>Returns from work orders.</li>
+<li>Reorder policies and reorder requests.</li>
+<li>Richer offline mobile sync and conflict resolution.</li>
+<li>FIFO/LIFO valuation and cost reports.</li>
+<li>Bin-level warehouse structure.</li>
+<li>Approval workflows for high-value or unusual movements.</li>
+<li>Reporting snapshots and analytical exports.</li>
+</ul>
+</section>
+<section id="02-data-model">
+<p class="source-file">02-data-model.md</p>
+<h1 id="data-model">Data Model</h1>
+<h2 id="erd">ERD</h2>
+<p>The Mermaid diagram source is kept in <code>02-erd.mmd</code>. It intentionally shows only the core stock model; supporting workflow/integration tables are listed later.</p>
+<h2 id="sku"><code>sku</code></h2>
+<p>Material catalogue item.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>code</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>Business SKU code.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>Display name.</td>
+</tr>
+<tr>
+<td><code>unit</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>Canonical unit: <code>each</code>, <code>box</code>, <code>metre</code>, etc.</td>
+</tr>
+<tr>
+<td><code>tracking_method</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>CONTAINER</code>, <code>UNIT</code>, or <code>CONTINUOUS</code>.</td>
+</tr>
+<tr>
+<td><code>min_increment</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Smallest valid movement, e.g. <code>1</code>, <code>0.1</code>, <code>0.01</code>.</td>
+</tr>
+<tr>
+<td><code>negative_tolerance</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Allowed negative threshold; default <code>0</code>.</td>
+</tr>
+<tr>
+<td><code>is_active</code></td>
+<td>boolean</td>
+<td>no</td>
+<td>Inactive SKUs cannot be used for normal new movements.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Unique <code>code</code>.</li>
+<li><code>min_increment &gt; 0</code>.</li>
+<li><code>negative_tolerance &gt;= 0</code>.</li>
+<li>Index <code>is_active</code>.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Persist quantities in the SKU canonical unit.</li>
+<li>Movement quantities must be multiples of <code>min_increment</code>.</li>
+</ul>
+<h2 id="stock_container"><code>stock_container</code></h2>
+<p>Any real or virtual place where stock is posted. Real containers represent physical stock locations.</p>
+<p>Virtual containers represent accounting sources and sinks and do not hold operational stock.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>container_type</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>VAN</code>, <code>WAREHOUSE</code>, <code>WORKSHOP</code>, later <code>LOCKER</code>, <code>BIN</code>, plus virtual types such as <code>SUPPLIER_SOURCE</code> and <code>WORK_ORDER_CONSUMED</code>.</td>
+</tr>
+<tr>
+<td><code>is_virtual</code></td>
+<td>boolean</td>
+<td>no</td>
+<td>Whether this is an accounting container rather than a physical stock location.</td>
+</tr>
+<tr>
+<td><code>code</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>Business identifier.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>Display name.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>ACTIVE</code>, <code>INACTIVE</code>, <code>QUARANTINED</code>.</td>
+</tr>
+<tr>
+<td><code>location_ref</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>External Location service ID for site-based storage.</td>
+</tr>
+<tr>
+<td><code>vehicle_ref</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>External vehicle ID for van containers.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Unique <code>code</code>.</li>
+<li>Index <code>(is_virtual, container_type, status)</code>.</li>
+<li>Partial index on <code>vehicle_ref</code> where present.</li>
+<li>Partial index on <code>location_ref</code> where present.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Van containers normally have a <code>vehicle_ref</code>.</li>
+<li>Warehouse/workshop containers normally have a <code>location_ref</code>.</li>
+<li>Inactive real containers cannot receive normal operational movements.</li>
+<li>Virtual containers are not shown in normal "stock on hand" operational views and cannot be used for reservations, van assignment, or manual transfers.</li>
+</ul>
+<h2 id="stock_balance"><code>stock_balance</code></h2>
+<p>Fast current physical stock projection for real containers only.</p>
+<p>There are no <code>stock_balance</code> rows for virtual containers.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>container_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Stock container.</td>
+</tr>
+<tr>
+<td><code>sku_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Material item.</td>
+</tr>
+<tr>
+<td><code>on_hand</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Current physical quantity.</td>
+</tr>
+<tr>
+<td><code>reserved</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Reserved quantity, default <code>0</code>; may be unused in MVP.</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>bigint</td>
+<td>no</td>
+<td>Incremented on update.</td>
+</tr>
+<tr>
+<td><code>updated_at</code></td>
+<td>timestamptz</td>
+<td>no</td>
+<td>Projection update time.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Unique <code>(container_id, sku_id)</code>.</li>
+<li>Foreign key <code>container_id -&gt; stock_container.id</code>.</li>
+<li>Foreign key <code>sku_id -&gt; sku.id</code>.</li>
+<li>Index <code>container_id</code> for container stock.</li>
+<li>Index <code>sku_id</code> for global stock by SKU.</li>
+<li><code>reserved &gt;= 0</code>.</li>
+<li><code>container_id</code> must reference a real, non-virtual container.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Updated only by the stock mutation transaction.</li>
+<li><code>available = on_hand - reserved</code>.</li>
+<li>Rebuildable from ledger lines where <code>container.is_virtual = false</code>.</li>
+<li>Represents operational on-hand stock only; virtual ledger quantities are excluded.</li>
+</ul>
+<h2 id="stock_ledger"><code>stock_ledger</code></h2>
+<p>Immutable movement header.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>movement_type</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>USAGE</code>, <code>RECEIPT</code>, <code>TRANSFER</code>, <code>ADJUSTMENT</code>, <code>STOCKTAKE</code>, <code>INITIAL_LOAD</code>, <code>RETURN</code>.</td>
+</tr>
+<tr>
+<td><code>source_ref</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>Human-readable source container/account for the movement, e.g. <code>warehouse-1</code> or <code>SUPPLIER_SOURCE</code>.</td>
+</tr>
+<tr>
+<td><code>destination_ref</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>Human-readable destination container/account for the movement, e.g. <code>van-1</code> or <code>WORK_ORDER_CONSUMED</code>.</td>
+</tr>
+<tr>
+<td><code>external_ref_type</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td><code>WORK_ORDER</code>, <code>PURCHASE_ORDER</code>, <code>IMPORT_JOB</code>, etc.</td>
+</tr>
+<tr>
+<td><code>external_ref</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>External ID.</td>
+</tr>
+<tr>
+<td><code>reason_code</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>Required for adjustments and discrepancy corrections.</td>
+</tr>
+<tr>
+<td><code>idempotency_key</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>API retry key.</td>
+</tr>
+<tr>
+<td><code>created_by_ref</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>User/operative/manager reference.</td>
+</tr>
+<tr>
+<td><code>posted_at</code></td>
+<td>timestamptz</td>
+<td>no</td>
+<td>Business posting time.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Unique <code>idempotency_key</code> where present.</li>
+<li>Index <code>(movement_type, posted_at)</code>.</li>
+<li>Index <code>(external_ref_type, external_ref)</code>.</li>
+<li>Future partitioning by <code>posted_at</code> if volume requires it.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Posted ledger records are immutable.</li>
+<li>Corrections are represented by new adjustment movements.</li>
+<li>Every ledger entry has at least two lines.</li>
+<li>Posted ledger entries must balance to zero per SKU/unit across their lines.</li>
+<li><code>source_ref</code> and <code>destination_ref</code> are denormalized readability fields; <code>stock_ledger_line</code> remains authoritative for balance calculation.</li>
+</ul>
+<h2 id="stock_ledger_line"><code>stock_ledger_line</code></h2>
+<p>Line-level quantity delta.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>ledger_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Parent movement.</td>
+</tr>
+<tr>
+<td><code>line_no</code></td>
+<td>integer</td>
+<td>no</td>
+<td>Stable order within movement.</td>
+</tr>
+<tr>
+<td><code>sku_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Material item.</td>
+</tr>
+<tr>
+<td><code>container_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Container affected.</td>
+</tr>
+<tr>
+<td><code>quantity_delta</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Positive inbound, negative outbound.</td>
+</tr>
+<tr>
+<td><code>unit_cost</code></td>
+<td>numeric</td>
+<td>yes</td>
+<td>Optional valuation data.</td>
+</tr>
+<tr>
+<td><code>posted_at</code></td>
+<td>timestamptz</td>
+<td>no</td>
+<td>Copied from the ledger header for efficient historical queries.</td>
+</tr>
+<tr>
+<td><code>metadata</code></td>
+<td>jsonb</td>
+<td>yes</td>
+<td>Batch, import row, supplier, notes.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Unique <code>(ledger_id, line_no)</code>.</li>
+<li>Foreign key <code>ledger_id -&gt; stock_ledger.id</code>.</li>
+<li>Foreign key <code>sku_id -&gt; sku.id</code>.</li>
+<li>Foreign key <code>container_id -&gt; stock_container.id</code>.</li>
+<li><code>quantity_delta &lt;&gt; 0</code>.</li>
+<li>Index <code>(container_id, sku_id, posted_at)</code>.</li>
+<li>Index <code>(sku_id, posted_at)</code>.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Usage creates negative lines.</li>
+<li>Receipt creates positive lines.</li>
+<li>Transfer creates one negative source line and one positive destination line under the same ledger entry.</li>
+<li>For double-entry consistency, every movement also has a balancing line.</li>
+<li>Receipts balance against <code>SUPPLIER_SOURCE</code>, usage balances against <code>WORK_ORDER_CONSUMED</code>, adjustments balance against <code>ADJUSTMENT_GAIN</code> or <code>ADJUSTMENT_LOSS</code>, and initial loads balance against <code>INITIAL_LOAD_SOURCE</code>.</li>
+</ul>
+<h2 id="stock_take"><code>stock_take</code></h2>
+<p>Physical stock audit session for one real container.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>container_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Container being counted.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>DRAFT</code>, <code>COUNTED</code>, <code>POSTED</code>, or <code>CANCELLED</code>.</td>
+</tr>
+<tr>
+<td><code>started_by_ref</code></td>
+<td>varchar</td>
+<td>no</td>
+<td>External user reference for the person who started the count.</td>
+</tr>
+<tr>
+<td><code>posted_ledger_id</code></td>
+<td>UUID</td>
+<td>yes</td>
+<td>Ledger entry created when discrepancies are posted.</td>
+</tr>
+<tr>
+<td><code>started_at</code></td>
+<td>timestamptz</td>
+<td>no</td>
+<td>Count start time.</td>
+</tr>
+<tr>
+<td><code>posted_at</code></td>
+<td>timestamptz</td>
+<td>yes</td>
+<td>Posting time, present only after status becomes <code>POSTED</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Foreign key <code>container_id -&gt; stock_container.id</code>.</li>
+<li>Foreign key <code>posted_ledger_id -&gt; stock_ledger.id</code>.</li>
+<li>Index <code>(container_id, status)</code>.</li>
+<li>At most one active stock take per container where status is <code>DRAFT</code> or <code>COUNTED</code>.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li><code>container_id</code> must reference a real, non-virtual container.</li>
+<li>Posting a stock take creates a <code>STOCKTAKE</code> ledger entry for non-zero discrepancies.</li>
+<li>If stock changed since the count snapshot, posting should return a stale-count conflict rather than silently applying old expected quantities.</li>
+</ul>
+<h2 id="stock_take_line"><code>stock_take_line</code></h2>
+<p>Counted quantity for one SKU within a stock take.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Null</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Primary key.</td>
+</tr>
+<tr>
+<td><code>stock_take_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Parent stock take.</td>
+</tr>
+<tr>
+<td><code>sku_id</code></td>
+<td>UUID</td>
+<td>no</td>
+<td>Counted SKU.</td>
+</tr>
+<tr>
+<td><code>expected_quantity</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Projected balance when the count line was prepared.</td>
+</tr>
+<tr>
+<td><code>counted_quantity</code></td>
+<td>numeric</td>
+<td>no</td>
+<td>Physical counted quantity.</td>
+</tr>
+<tr>
+<td><code>discrepancy_quantity</code></td>
+<td>numeric</td>
+<td>no</td>
+<td><code>counted_quantity - expected_quantity</code>.</td>
+</tr>
+<tr>
+<td><code>reason_code</code></td>
+<td>varchar</td>
+<td>yes</td>
+<td>Required for material discrepancies.</td>
+</tr>
+<tr>
+<td><code>notes</code></td>
+<td>text</td>
+<td>yes</td>
+<td>Optional count notes.</td>
+</tr>
+</tbody>
+</table>
+<p>Key constraints and indexes:</p>
+<ul>
+<li>Foreign key <code>stock_take_id -&gt; stock_take.id</code>.</li>
+<li>Foreign key <code>sku_id -&gt; sku.id</code>.</li>
+<li>Unique <code>(stock_take_id, sku_id)</code>.</li>
+</ul>
+<p>Invariants:</p>
+<ul>
+<li>Counted quantities must satisfy the SKU's <code>min_increment</code>.</li>
+<li>Posting converts non-zero discrepancies into balanced ledger lines against <code>ADJUSTMENT_GAIN</code> or <code>ADJUSTMENT_LOSS</code>.</li>
+</ul>
+<h2 id="supporting-tables">Supporting Tables</h2>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>idempotency_record</code></td>
+<td>Stores request hash, status, and response for safe mobile/API retries.</td>
+</tr>
+<tr>
+<td><code>outbox_event</code></td>
+<td>Stores committed integration events to publish asynchronously.</td>
+</tr>
+<tr>
+<td><code>import_job</code></td>
+<td>Day-0 catalogue and stock import lifecycle.</td>
+</tr>
+<tr>
+<td><code>import_row_error</code></td>
+<td>Row-level validation errors and warnings.</td>
+</tr>
+<tr>
+<td><code>reorder_policy</code></td>
+<td>Min/target quantity rules.</td>
+</tr>
+<tr>
+<td><code>reorder_request</code></td>
+<td>Lightweight request to replenish stock.</td>
+</tr>
+<tr>
+<td><code>cost_layer</code></td>
+<td>Optional FIFO/LIFO valuation layer.</td>
+</tr>
+</tbody>
+</table>
+<p>Supporting table relationships:</p>
+<ul>
+<li><code>idempotency_record.ledger_id -&gt; stock_ledger.id</code> when a request posts a movement.</li>
+<li><code>outbox_event.aggregate_id -&gt; stock_ledger.id</code> when publishing stock movement events.</li>
+<li><code>import_row_error.import_job_id -&gt; import_job.id</code>.</li>
+<li><code>import_job.applied_ledger_id -&gt; stock_ledger.id</code> when an initial load is applied as a ledger entry.</li>
+<li><code>reorder_policy.sku_id -&gt; sku.id</code>.</li>
+<li><code>reorder_policy.container_id -&gt; stock_container.id</code> when the policy is container-specific.</li>
+<li><code>reorder_request.policy_id -&gt; reorder_policy.id</code>.</li>
+<li><code>reorder_request.sku_id -&gt; sku.id</code>.</li>
+<li><code>reorder_request.container_id -&gt; stock_container.id</code> when replenishing a specific container.</li>
+<li><code>cost_layer.sku_id -&gt; sku.id</code>.</li>
+<li><code>cost_layer.container_id -&gt; stock_container.id</code>.</li>
+<li><code>cost_layer.source_ledger_line_id -&gt; stock_ledger_line.id</code>.</li>
+</ul>
+<h2 id="ledger-vs-balances-vs-snapshots">Ledger vs Balances vs Snapshots</h2>
+<p>Ledger-only is best for auditability, especially with double-entry balancing, but too slow for frequent mobile and dashboard reads because every lookup aggregates history.</p>
+<p>Persisted balances are fast and easy to lock for concurrent writes, but they are a projection of physical stock only. They must only be updated transactionally with ledger inserts for real containers.</p>
+<p>Snapshots/materialized views are useful for historical reports and <code>stock at time T</code>. They should not replace the write model. A practical approach is daily snapshots plus ledger deltas after the snapshot.</p>
+<p>Recommended model:</p>
+<ul>
+<li>Ledger is the balanced source of truth for real and virtual postings.</li>
+<li>Balance is the current physical stock projection for real containers.</li>
+<li>Snapshots/read replicas support reporting.</li>
+</ul>
+</section>
+<section id="03-endpoints">
+<p class="source-file">03-endpoints.md</p>
+<h1 id="api-design">API Design</h1>
+<p>The API is REST-oriented around the main resources while keeping typed transaction resources for business clarity. Each typed transaction resource creates one immutable <code>stock_ledger</code> entry underneath.</p>
+<p>All mutating endpoints require authorization, permission checks, and an <code>Idempotency-Key</code> header. Successful mutating endpoints return the UUID of the created or updated resource so clients have a stable handle for retries, polling, audit, and UI state.</p>
+<h2 id="catalogue-and-containers">Catalogue and Containers</h2>
+<pre><code class="language-text">GET   /skus
+POST  /skus
+GET   /skus/{sku_id}
+PATCH /skus/{sku_id}
+
+GET   /stock-containers
+POST  /stock-containers
+GET   /stock-containers/{container_id}
+PATCH /stock-containers/{container_id}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>SKU quantities use the SKU canonical unit and must respect <code>min_increment</code>.</li>
+<li>Normal container APIs expose real containers by default.</li>
+<li>Virtual containers are hidden by default and are only visible through audit/admin access, for example with <code>include_virtual=true</code>.</li>
+<li>Virtual containers cannot be assigned to operatives, used for reservations, or selected in normal transfer/usage UI.</li>
+</ul>
+<h2 id="physical-stock-balances">Physical Stock Balances</h2>
+<pre><code class="language-text">GET /stock-balances?sku_id=&amp;container_id=
+GET /stock-containers/{container_id}/balances
+GET /skus/{sku_id}/balances
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Balances are read-only API resources.</li>
+<li>Clients never <code>POST</code> or <code>PATCH</code> balances directly.</li>
+<li>Balance endpoints return physical stock only: real containers, <code>on_hand</code>, <code>reserved</code>, and <code>available</code>.</li>
+<li>Virtual ledger postings are excluded from operational balance responses.</li>
+</ul>
+<h2 id="ledger-and-transaction-resources">Ledger and Transaction Resources</h2>
+<pre><code class="language-text">GET /stock-ledger-entries?movement_type=&amp;sku_id=&amp;container_id=&amp;from=&amp;to=
+GET /stock-ledger-entries/{ledger_id}
+
+POST /stock-usage-records
+POST /stock-receipts
+POST /stock-transfers
+POST /stock-adjustments
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li><code>stock_ledger</code> is immutable and remains the canonical audit record.</li>
+<li>Typed transaction resources are command-like resource creations that create a posted ledger entry.</li>
+<li>Each successful typed <code>POST</code> returns the typed resource UUID and the underlying <code>ledger_id</code>.</li>
+<li>All transaction resources create balanced double-entry ledger lines.</li>
+<li>Audit access to <code>stock-ledger-entries</code> may include virtual containers; operational APIs do not.</li>
+</ul>
+<p>Example successful transaction response:</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;4f4a2c32-5f53-4d56-9dc6-0df510ddf178&quot;,
+  &quot;ledger_id&quot;: &quot;8a758c35-b3cf-4d94-9d6e-059c4b7ad0b7&quot;,
+  &quot;status&quot;: &quot;POSTED&quot;
+}
+</code></pre>
+<h3 id="record-usage">Record Usage</h3>
+<p><code>POST /stock-usage-records</code></p>
+<pre><code class="language-json">{
+  &quot;work_order_ref&quot;: &quot;WO-12345&quot;,
+  &quot;container_id&quot;: &quot;van-1&quot;,
+  &quot;operative_ref&quot;: &quot;user-100&quot;,
+  &quot;lines&quot;: [
+    { &quot;sku_id&quot;: &quot;screw-001&quot;, &quot;quantity&quot;: &quot;3&quot;, &quot;unit&quot;: &quot;each&quot; },
+    { &quot;sku_id&quot;: &quot;cable-001&quot;, &quot;quantity&quot;: &quot;2.4&quot;, &quot;unit&quot;: &quot;metre&quot; }
+  ]
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Field Operative can consume only from an assigned van unless a manager overrides.</li>
+<li><code>container_id</code> must be a real container.</li>
+<li>Quantities must be positive and valid for the SKU increment.</li>
+<li>Internally, usage writes a negative line from the van and a positive balancing line to <code>WORK_ORDER_CONSUMED</code>, tagged with the work order reference.</li>
+<li>If stock would fall below tolerance, return <code>409 INSUFFICIENT_STOCK</code>.</li>
+</ul>
+<h3 id="receive-stock">Receive Stock</h3>
+<p><code>POST /stock-receipts</code></p>
+<pre><code class="language-json">{
+  &quot;destination_container_id&quot;: &quot;warehouse-1&quot;,
+  &quot;purchase_order_ref&quot;: &quot;PO-9001&quot;,
+  &quot;lines&quot;: [
+    { &quot;sku_id&quot;: &quot;screw-001&quot;, &quot;quantity&quot;: &quot;100&quot;, &quot;unit&quot;: &quot;each&quot;, &quot;unit_cost&quot;: &quot;0.04&quot; }
+  ]
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Store Manager permission required.</li>
+<li>Destination container must be active and real.</li>
+<li>Quantities must be positive.</li>
+<li>Internally, receipt writes a positive destination line and a negative balancing line from <code>SUPPLIER_SOURCE</code>.</li>
+<li>Optional valuation data creates cost layers if enabled.</li>
+</ul>
+<h3 id="transfer-stock">Transfer Stock</h3>
+<p><code>POST /stock-transfers</code></p>
+<pre><code class="language-json">{
+  &quot;source_container_id&quot;: &quot;warehouse-1&quot;,
+  &quot;destination_container_id&quot;: &quot;van-1&quot;,
+  &quot;reason_code&quot;: &quot;VAN_REPLENISHMENT&quot;,
+  &quot;lines&quot;: [
+    { &quot;sku_id&quot;: &quot;screw-001&quot;, &quot;quantity&quot;: &quot;25&quot;, &quot;unit&quot;: &quot;each&quot; }
+  ]
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Operations Manager or Store Manager permission required.</li>
+<li>Source and destination must be different real containers.</li>
+<li>Source and destination balance rows are locked in deterministic order to reduce deadlocks.</li>
+<li>One ledger entry contains both source negative lines and destination positive lines. Since both sides are real containers, the transaction balances without a virtual container.</li>
+</ul>
+<h3 id="adjust-stock">Adjust Stock</h3>
+<p><code>POST /stock-adjustments</code></p>
+<pre><code class="language-json">{
+  &quot;container_id&quot;: &quot;van-1&quot;,
+  &quot;reason_code&quot;: &quot;DAMAGED&quot;,
+  &quot;notes&quot;: &quot;Cable roll damaged during loading.&quot;,
+  &quot;lines&quot;: [
+    { &quot;sku_id&quot;: &quot;cable-001&quot;, &quot;quantity_delta&quot;: &quot;-1.5&quot;, &quot;unit&quot;: &quot;metre&quot; }
+  ]
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Manager permission required.</li>
+<li>Reason is mandatory.</li>
+<li><code>container_id</code> must be a real container.</li>
+<li>Negative adjustments respect tolerance unless an elevated override is explicitly allowed.</li>
+<li>Negative adjustments balance against <code>ADJUSTMENT_LOSS</code>; positive adjustments balance against <code>ADJUSTMENT_GAIN</code>.</li>
+</ul>
+<h2 id="stock-takes">Stock Takes</h2>
+<pre><code class="language-text">POST  /stock-takes
+GET   /stock-takes/{stock_take_id}
+PATCH /stock-takes/{stock_take_id}
+PUT   /stock-takes/{stock_take_id}/lines/{sku_id}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li><code>POST /stock-takes</code> creates a stock take for one real container.</li>
+<li><code>POST /stock-takes</code> returns the created <code>stock_take_id</code>.</li>
+<li><code>PUT /stock-takes/{stock_take_id}/lines/{sku_id}</code> adds or replaces the counted quantity for one SKU.</li>
+<li>Posting is a lifecycle transition via <code>PATCH /stock-takes/{stock_take_id}</code> with <code>status: "POSTED"</code>, not an action endpoint.</li>
+<li>Posting creates a <code>STOCKTAKE</code> ledger entry for discrepancies.</li>
+<li>Positive discrepancies balance against <code>ADJUSTMENT_GAIN</code>; negative discrepancies balance against <code>ADJUSTMENT_LOSS</code>.</li>
+<li>If balances changed since the count was prepared, return <code>409 STOCK_TAKE_STALE</code>.</li>
+</ul>
+<h2 id="import-jobs">Import Jobs</h2>
+<pre><code class="language-text">POST  /import-jobs
+GET   /import-jobs/{import_job_id}
+PATCH /import-jobs/{import_job_id}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Import jobs support day-0 catalogue, container, stock quantity, and optional cost layer import.</li>
+<li><code>POST /import-jobs</code> returns the created <code>import_job_id</code>.</li>
+<li>The import lifecycle is represented by status transitions such as <code>VALIDATED</code>, <code>APPROVED</code>, <code>APPLYING</code>, and <code>APPLIED</code>.</li>
+<li>Approval and apply are <code>PATCH</code> status transitions, not <code>/approve</code> or <code>/apply</code> action endpoints.</li>
+<li>Applying an import creates <code>INITIAL_LOAD</code> ledger entries balanced against <code>INITIAL_LOAD_SOURCE</code>.</li>
+<li>Imports never directly edit <code>stock_balance</code>.</li>
+</ul>
+<h2 id="reorder-resources">Reorder Resources</h2>
+<pre><code class="language-text">GET   /reorder-policies
+POST  /reorder-policies
+PATCH /reorder-policies/{reorder_policy_id}
+
+GET   /reorder-requests
+POST  /reorder-requests
+PATCH /reorder-requests/{reorder_request_id}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Reorder policies define minimum and target quantities.</li>
+<li>Reorder requests do not change stock.</li>
+<li>Only receipts change physical stock.</li>
+</ul>
+<h2 id="error-semantics">Error Semantics</h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>400</code></td>
+<td>Invalid body, unit, quantity, increment, lifecycle transition, or missing reason.</td>
+</tr>
+<tr>
+<td><code>401/403</code></td>
+<td>Authentication or permission failure.</td>
+</tr>
+<tr>
+<td><code>404</code></td>
+<td>Unknown SKU, container, stock take, import job, or external reference when strict validation is enabled.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>Business conflict: insufficient stock, stale stock take, invalid lifecycle transition, or idempotency conflict.</td>
+</tr>
+<tr>
+<td><code>422</code></td>
+<td>Import parsed successfully but contains validation errors.</td>
+</tr>
+<tr>
+<td><code>202</code></td>
+<td>Async import validation or apply job accepted.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="04-queue">
+<p class="source-file">04-queue.md</p>
+<h1 id="global-ordered-queue-for-stock-mutations">Global Ordered Queue for Stock Mutations</h1>
+<h2 id="summary">Summary</h2>
+<p>This explores using a queue-like command path for all stock-changing operations: usage, receipts/topups, transfers, adjustments, stock takes, returns, and day-0 initial loads.</p>
+<p>The goal is to make stock mutations process in a deterministic global order. The queue serializes command processing, but PostgreSQL remains the durable source of truth for commands, ledger entries, balances, and idempotency.</p>
+<h2 id="core-design">Core Design</h2>
+<p>Add a durable <code>stock_command</code> concept before the ledger:</p>
+<ol>
+<li>API receives a stock-changing request.</li>
+<li>API validates basic request shape, permissions, idempotency key, and referenced resources where possible.</li>
+<li>API writes a <code>PENDING</code> command with a monotonically increasing <code>sequence_number</code>.</li>
+<li>API returns <code>202 Accepted</code> with a UUID <code>command_id</code>.</li>
+<li>A single active worker processes commands in <code>sequence_number</code> order.</li>
+<li>Worker posts the double-entry <code>stock_ledger</code> entry and updates <code>stock_balance</code> inside one PostgreSQL transaction.</li>
+<li>Worker marks the command <code>POSTED</code> or <code>REJECTED</code>.</li>
+</ol>
+<p>RabbitMQ/Celery can be used as a wake-up and processing mechanism, but not as the authoritative ordered log.</p>
+<p>The database command table defines order. RabbitMQ delivery order should not be trusted for correctness because retries, redeliveries, multiple consumers, and worker failures can complicate ordering.</p>
+<h2 id="write-path">Write Path</h2>
+<pre><code class="language-text">POST /stock-usage-records
+  -&gt; validate request shape and permissions
+  -&gt; check Idempotency-Key
+  -&gt; insert stock_command(status=PENDING, sequence_number=N)
+  -&gt; enqueue/wake worker
+  -&gt; return 202 Accepted with command_id
+
+worker
+  -&gt; claim next PENDING stock_command by sequence_number
+  -&gt; open PostgreSQL transaction
+  -&gt; validate business rules against current stock_balance
+  -&gt; lock affected real-container stock_balance rows
+  -&gt; create balanced stock_ledger + stock_ledger_line rows
+  -&gt; update stock_balance projection
+  -&gt; mark stock_command POSTED with ledger_id
+  -&gt; insert outbox_event
+  -&gt; commit
+</code></pre>
+<p>If business validation fails, for example insufficient stock, the worker marks the command <code>REJECTED</code> with a structured reason and continues to the next command.</p>
+<h2 id="command-statuses">Command Statuses</h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PENDING</code></td>
+<td>Accepted but not processed.</td>
+</tr>
+<tr>
+<td><code>PROCESSING</code></td>
+<td>Claimed by a worker.</td>
+</tr>
+<tr>
+<td><code>POSTED</code></td>
+<td>Ledger entry created and balance updated successfully.</td>
+</tr>
+<tr>
+<td><code>REJECTED</code></td>
+<td>Business validation failed, for example insufficient stock.</td>
+</tr>
+<tr>
+<td><code>FAILED_RETRYABLE</code></td>
+<td>Infrastructure failure; worker can retry.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="api-implications">API Implications</h2>
+<p>Mutating endpoints such as:</p>
+<pre><code class="language-text">POST /stock-usage-records
+POST /stock-receipts
+POST /stock-transfers
+POST /stock-adjustments
+POST /stock-takes
+POST /import-jobs
+</code></pre>
+<p>return <code>202 Accepted</code> instead of immediately returning a posted movement. The response always includes a UUID <code>command_id</code>, which becomes the client-visible tracking handle for polling, retries, and UI state.</p>
+<p>Example response:</p>
+<pre><code class="language-json">{
+  &quot;command_id&quot;: &quot;4f4a2c32-5f53-4d56-9dc6-0df510ddf178&quot;,
+  &quot;status&quot;: &quot;PENDING&quot;,
+  &quot;sequence_number&quot;: 1042
+}
+</code></pre>
+<p>Add command status endpoints:</p>
+<pre><code class="language-text">GET /stock-commands/{command_id}
+GET /stock-commands?status=&amp;from=&amp;to=
+</code></pre>
+<p>Example posted command:</p>
+<pre><code class="language-json">{
+  &quot;command_id&quot;: &quot;4f4a2c32-5f53-4d56-9dc6-0df510ddf178&quot;,
+  &quot;status&quot;: &quot;POSTED&quot;,
+  &quot;sequence_number&quot;: 1042,
+  &quot;ledger_id&quot;: &quot;8a758c35-b3cf-4d94-9d6e-059c4b7ad0b7&quot;
+}
+</code></pre>
+<p>Example rejected command:</p>
+<pre><code class="language-json">{
+  &quot;command_id&quot;: &quot;2e193588-f4cb-4713-911e-0d77b061e999&quot;,
+  &quot;status&quot;: &quot;REJECTED&quot;,
+  &quot;sequence_number&quot;: 1043,
+  &quot;rejection&quot;: {
+    &quot;code&quot;: &quot;INSUFFICIENT_STOCK&quot;,
+    &quot;message&quot;: &quot;Requested quantity would reduce stock below tolerance.&quot;,
+    &quot;sku_id&quot;: &quot;screw-001&quot;,
+    &quot;container_id&quot;: &quot;van-1&quot;
+  }
+}
+</code></pre>
+<p>Current stock reads still use <code>stock_balance</code>, but clients must understand that recently submitted commands may still be pending.</p>
+<h2 id="idempotency">Idempotency</h2>
+<p>Idempotency is handled at command creation.</p>
+<ul>
+<li>Same <code>Idempotency-Key</code> and same request returns the existing <code>command_id</code>.</li>
+<li>Same <code>Idempotency-Key</code> with a different request returns <code>409 IDEMPOTENCY_KEY_CONFLICT</code>.</li>
+<li>The idempotency row and <code>stock_command</code> row are committed together.</li>
+<li>Retries do not create duplicate commands.</li>
+</ul>
+<h2 id="ordering-guarantees">Ordering Guarantees</h2>
+<p>The selected model is global ordering:</p>
+<pre><code class="language-text">command 1042 must be processed before command 1043
+command 1043 must be processed before command 1044
+</code></pre>
+<p>This gives simple semantics: if command B has a higher <code>sequence_number</code> than command A, B cannot post before A.</p>
+<p>The database should enforce or support this with:</p>
+<ul>
+<li>Monotonic <code>sequence_number</code>, usually from a database sequence.</li>
+<li>Worker query that claims the lowest eligible <code>PENDING</code> command.</li>
+<li>Single active processor for stock commands, or leader-election/advisory-lock protection if multiple workers are running.</li>
+<li>Recovery process for commands stuck in <code>PROCESSING</code>.</li>
+</ul>
+<h2 id="interaction-with-ledger-and-balances">Interaction With Ledger and Balances</h2>
+<p>The command queue does not replace the stock ledger.</p>
+<pre><code class="language-text">stock_command = accepted intent to mutate stock
+stock_ledger  = immutable posted accounting record
+stock_balance = current physical stock projection
+outbox_event  = integration event after commit
+</code></pre>
+<p>Only <code>POSTED</code> commands produce ledger entries. <code>REJECTED</code> commands remain useful audit records of attempted operations, but do not affect stock.</p>
+<p>The worker still uses a PostgreSQL transaction when posting a command:</p>
+<ul>
+<li>Lock affected real-container <code>stock_balance</code> rows.</li>
+<li>Validate availability and tolerance.</li>
+<li>Insert balanced double-entry ledger lines.</li>
+<li>Update physical balances.</li>
+<li>Mark command as <code>POSTED</code>.</li>
+<li>Insert outbox event.</li>
+</ul>
+<h2 id="benefits">Benefits</h2>
+<ul>
+<li>Simple global ordering semantics.</li>
+<li>Avoids most concurrent stock-write conflicts because only one stock command posts at a time.</li>
+<li>Works well for unreliable mobile clients because submitted stock mutations become durable server-side commands.</li>
+<li>Provides a clear pending/posted/rejected lifecycle for mobile clients.</li>
+<li>Durable command history helps debug retries, timeouts, and delayed processing.</li>
+<li>Worker can safely retry infrastructure failures without duplicating ledger entries.</li>
+</ul>
+<h2 id="unreliable-mobile-clients">Unreliable Mobile Clients</h2>
+<p>The queue approach is useful for unreliable mobile clients because the API can accept the user's intent durably and return a <code>command_id</code> immediately.</p>
+<pre><code class="language-json">{
+  &quot;command_id&quot;: &quot;4f4a2c32-5f53-4d56-9dc6-0df510ddf178&quot;,
+  &quot;status&quot;: &quot;PENDING&quot;
+}
+</code></pre>
+<p>The mobile app can then safely retry, poll, and reconcile later.</p>
+<p>Benefits:</p>
+<ul>
+<li>The app does not need to keep a request open while stock is posted.</li>
+<li>If the connection drops after submit, retrying with the same <code>Idempotency-Key</code> returns the same <code>command_id</code>.</li>
+<li>The user can see pending operations locally.</li>
+<li>The server later marks the command <code>POSTED</code> or <code>REJECTED</code>.</li>
+<li>If stock is insufficient by the time the command is processed, the app receives a structured rejection instead of silent inconsistency.</li>
+<li>The model supports offline-ish behavior: the app can queue local drafts, then submit them when connectivity returns.</li>
+</ul>
+<p>Important caveat:</p>
+<p>The server-side queue helps after the request reaches the server. It does not solve the case where the mobile app is fully offline and cannot submit at all. For that, the mobile app still needs a local outbox.</p>
+<pre><code class="language-text">mobile local draft/outbox
+  -&gt; submit when online with Idempotency-Key
+  -&gt; server creates stock_command
+  -&gt; app polls command_id
+  -&gt; command becomes POSTED or REJECTED
+</code></pre>
+<p>This means the queue should be paired with mobile UI states for <code>PENDING</code>, <code>POSTED</code>, and <code>REJECTED</code> operations.</p>
+<h2 id="tradeoffs">Tradeoffs</h2>
+<ul>
+<li>Stock writes become eventually consistent from the client perspective.</li>
+<li>One global worker limits throughput.</li>
+<li>Worker outage pauses all stock mutations until recovered.</li>
+<li>Mobile UX must handle pending, posted, and rejected states.</li>
+<li>The queue cannot be the only source of truth; PostgreSQL still owns durable state.</li>
+<li>Global ordering is stricter than necessary for unrelated containers and may be overkill if per-container ordering would be enough.</li>
+</ul>
+<h2 id="failure-handling">Failure Handling</h2>
+<ul>
+<li>API timeout before response: client retries with the same <code>Idempotency-Key</code> and receives the existing <code>command_id</code>.</li>
+<li>Worker crash before transaction commit: command remains <code>PENDING</code> or can be recovered from stale <code>PROCESSING</code>.</li>
+<li>Worker crash after commit: command is already <code>POSTED</code>; retry must detect <code>ledger_id</code> and avoid reposting.</li>
+<li>Business failure: command becomes <code>REJECTED</code>; no ledger or balance mutation is created.</li>
+<li>Outbox publish failure: command remains <code>POSTED</code>; outbox retry publishes later.</li>
+</ul>
+<h2 id="test-scenarios">Test Scenarios</h2>
+<ul>
+<li>Two usage commands for the same van/SKU are submitted concurrently; lower <code>sequence_number</code> posts first.</li>
+<li>A receipt/topup and a usage for the same SKU are submitted concurrently; final result follows sequence order.</li>
+<li>A command that would make stock negative is processed in order and becomes <code>REJECTED</code>; later commands continue.</li>
+<li>API retry with the same <code>Idempotency-Key</code> returns the same <code>command_id</code>.</li>
+<li>Same <code>Idempotency-Key</code> with a different request returns <code>409 IDEMPOTENCY_KEY_CONFLICT</code>.</li>
+<li>Worker crashes after marking <code>PROCESSING</code>; recovery safely retries or returns it to <code>PENDING</code>.</li>
+<li>Worker crashes after posting the ledger but before publishing outbox; retry does not create a duplicate ledger entry.</li>
+<li>Ledger/balance reconciliation proves balances are derivable from posted ledger entries only.</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p>This model is valid if the product accepts eventual consistency for stock writes and wants simple global ordering semantics.</p>
+<p>For the challenge, present it as an optional variant or future evolution rather than the default design. The original synchronous transaction model with row locks is simpler and likely sufficient for hundreds of concurrent users and thousands of movements/day. A global command queue is easier to reason about but adds pending states, worker recovery logic, and throughput constraints.</p>
+</section>
+</body>
+</html>
