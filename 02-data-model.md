@@ -81,6 +81,8 @@ There are no `stock_balance` rows for virtual containers.
 Key constraints and indexes:
 
 - Unique `(container_id, sku_id)`.
+- Foreign key `container_id -> stock_container.id`.
+- Foreign key `sku_id -> sku.id`.
 - Index `container_id` for container stock.
 - Index `sku_id` for global stock by SKU.
 - `reserved >= 0`.
@@ -144,6 +146,9 @@ Line-level quantity delta.
 Key constraints and indexes:
 
 - Unique `(ledger_id, line_no)`.
+- Foreign key `ledger_id -> stock_ledger.id`.
+- Foreign key `sku_id -> sku.id`.
+- Foreign key `container_id -> stock_container.id`.
 - `quantity_delta <> 0`.
 - Index `(container_id, sku_id, posted_at)`.
 - Index `(sku_id, posted_at)`.
@@ -169,6 +174,25 @@ Invariants:
 | `reorder_policy` | Min/target quantity rules. |
 | `reorder_request` | Lightweight request to replenish stock. |
 | `cost_layer` | Optional FIFO/LIFO valuation layer. |
+
+Supporting table relationships:
+
+- `idempotency_record.movement_id -> stock_ledger.id` when a request posts a movement.
+- `outbox_event.aggregate_id -> stock_ledger.id` when publishing stock movement events.
+- `stock_take.container_id -> stock_container.id`.
+- `stock_take.posted_ledger_id -> stock_ledger.id` when discrepancies are posted.
+- `stock_take_line.stock_take_id -> stock_take.id`.
+- `stock_take_line.sku_id -> sku.id`.
+- `import_row_error.import_job_id -> import_job.id`.
+- `import_job.applied_ledger_id -> stock_ledger.id` when an initial load is applied as a ledger entry.
+- `reorder_policy.sku_id -> sku.id`.
+- `reorder_policy.container_id -> stock_container.id` when the policy is container-specific.
+- `reorder_request.policy_id -> reorder_policy.id`.
+- `reorder_request.sku_id -> sku.id`.
+- `reorder_request.container_id -> stock_container.id` when replenishing a specific container.
+- `cost_layer.sku_id -> sku.id`.
+- `cost_layer.container_id -> stock_container.id`.
+- `cost_layer.source_ledger_line_id -> stock_ledger_line.id`.
 
 ## Ledger vs Balances vs Snapshots
 
