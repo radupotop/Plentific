@@ -62,11 +62,11 @@ Important invariants:
 - Every posted ledger transaction must balance to zero per SKU/unit across real and virtual containers.
 - Posted ledger entries are immutable; corrections are new movements.
 
-Full ERD, fields, constraints, indexes, and ledger/balance trade-offs are in `data-model.md`.
+Full ERD, fields, constraints, indexes, and ledger/balance trade-offs are in `02-data-model.md`.
 
 ## 4. API Design
 
-The API is REST-oriented around main resources while keeping typed transaction resources for business clarity. Full endpoint details are in `endpoints.md`.
+The API is REST-oriented around main resources while keeping typed transaction resources for business clarity. Full endpoint details are in `03-endpoints.md`.
 
 High-level resource groups:
 
@@ -85,7 +85,7 @@ API rules:
 - Lifecycle changes use `PATCH` status transitions, not action endpoints.
 - Business conflicts return `409`.
 
-An optional global ordered queue variant is described in `queue.md`. 
+An optional global ordered queue variant is described in `04-queue.md`. 
 It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
 The queue variant is useful if the product wants deterministic global command ordering, but it changes API semantics to `202 Accepted`, introduces pending/rejected command states, requires worker recovery, and makes stock writes eventually consistent.
 

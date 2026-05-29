@@ -4,7 +4,7 @@
 
 The challenge is a backend architecture and systems design exercise, not an implementation task.
 
-This conclusion comes from `Challenge.md`, which explicitly says the candidate deliverables are:
+This conclusion comes from `00-challenge.md`, which explicitly says the candidate deliverables are:
 
 > Provide a written response (2-8 pages) plus diagrams.
 
@@ -110,7 +110,7 @@ Day-0 quantities should not be inserted directly into `stock_balance`. They shou
 
 ## Suggested Written Response Structure
 
-The final deliverable should likely be a `Solution.md` or PDF containing:
+The final deliverable should likely be a `01-solution.md` or PDF containing:
 
 1. Qualifying questions and assumptions: external service consistency, offline mobile, negative tolerance, valuation needs, procurement ownership.
 2. Proposed architecture: new service, external references, SNS/outbox, Celery jobs, transaction boundaries.
@@ -239,7 +239,7 @@ In the final design, movement rows should be immutable and retained long-term, w
 
 ## Deliverable Created
 
-Created `Solution.md` as the written challenge response.
+Created `01-solution.md` as the written challenge response.
 
 It includes:
 
