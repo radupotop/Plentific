@@ -170,9 +170,46 @@ The worker still uses a PostgreSQL transaction when posting a command:
 
 - Simple global ordering semantics.
 - Avoids most concurrent stock-write conflicts because only one stock command posts at a time.
+- Works well for unreliable mobile clients because submitted stock mutations become durable server-side commands.
 - Provides a clear pending/posted/rejected lifecycle for mobile clients.
 - Durable command history helps debug retries, timeouts, and delayed processing.
 - Worker can safely retry infrastructure failures without duplicating ledger entries.
+
+## Unreliable Mobile Clients
+
+The queue approach is useful for unreliable mobile clients because the API can accept the user's intent durably and return a `command_id` immediately.
+
+```json
+{
+  "command_id": "4f4a2c32-5f53-4d56-9dc6-0df510ddf178",
+  "status": "PENDING"
+}
+```
+
+The mobile app can then safely retry, poll, and reconcile later.
+
+Benefits:
+
+- The app does not need to keep a request open while stock is posted.
+- If the connection drops after submit, retrying with the same `Idempotency-Key` returns the same `command_id`.
+- The user can see pending operations locally.
+- The server later marks the command `POSTED` or `REJECTED`.
+- If stock is insufficient by the time the command is processed, the app receives a structured rejection instead of silent inconsistency.
+- The model supports offline-ish behavior: the app can queue local drafts, then submit them when connectivity returns.
+
+Important caveat:
+
+The server-side queue helps after the request reaches the server. It does not solve the case where the mobile app is fully offline and cannot submit at all. For that, the mobile app still needs a local outbox.
+
+```text
+mobile local draft/outbox
+  -> submit when online with Idempotency-Key
+  -> server creates stock_command
+  -> app polls command_id
+  -> command becomes POSTED or REJECTED
+```
+
+This means the queue should be paired with mobile UI states for `PENDING`, `POSTED`, and `REJECTED` operations.
 
 ## Tradeoffs
 
