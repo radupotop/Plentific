@@ -304,7 +304,7 @@ If valuation/accounting becomes important, the virtual containers can be mapped 
 <li>Ledger and typed transactions: <code>/stock-ledger-entries</code>, <code>/stock-usage-records</code>, <code>/stock-receipts</code>, <code>/stock-transfers</code>, <code>/stock-adjustments</code>.</li>
 <li>Workflows: <code>/stock-takes</code>, <code>/import-jobs</code>, <code>/reorder-policies</code>, <code>/reorder-requests</code>.</li>
 </ul>
-<p>API rules:</p>
+<h3 id="api-rules">API rules:</h3>
 <ul>
 <li>All mutating endpoints require authorization, permission checks, and an <code>Idempotency-Key</code>.</li>
 <li>Mutating endpoints return a UUID handle.</li>
@@ -314,6 +314,12 @@ If valuation/accounting becomes important, the virtual containers can be mapped 
 <li>Lifecycle changes use <code>PATCH</code> status transitions, not action endpoints.</li>
 <li>Business conflicts return <code>409</code>.</li>
 </ul>
+<h3 id="idempotency-key-generation">Idempotency-Key Generation</h3>
+<p>Clients generate <code>Idempotency-Key</code> per logical mutation attempt. Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.</p>
+<p>The key should be treated as opaque by the server.
+A UUIDv4 or UUIDv7 is sufficient, optionally prefixed for debugging, for example <code>mobile:{device_id}:{uuid}</code>. 
+The server stores the key with a hash of the request body: same key plus same request returns the original result; same key plus different request returns <code>409 IDEMPOTENCY_KEY_CONFLICT</code>.</p>
+<p>For synchronous writes, retrying with the same key returns the same created resource or <code>ledger_id</code>. For the queued variant, retrying with the same key returns the same <code>command_id</code>.</p>
 <h3 id="global-ordered-queue">Global Ordered Queue</h3>
 <p>An optional global ordered queue variant is described in <code>04-queue.md</code>. 
 It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
