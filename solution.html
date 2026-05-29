@@ -315,14 +315,17 @@ If valuation/accounting becomes important, the virtual containers can be mapped 
 <li>Business conflicts return <code>409</code>.</li>
 </ul>
 <h3 id="idempotency-key-generation">Idempotency-Key Generation</h3>
-<p>Clients generate <code>Idempotency-Key</code> per logical mutation attempt. Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.</p>
+<p>Clients generate <code>Idempotency-Key</code> per logical mutation attempt. 
+Mobile clients should create and persist the key with their local outbox item before the first network attempt, then reuse the same key for retries of the same request.</p>
 <p>The key should be treated as opaque by the server.
 A UUIDv4 or UUIDv7 is sufficient, optionally prefixed for debugging, for example <code>mobile:{device_id}:{uuid}</code>. 
 The server stores the key with a hash of the request body: same key plus same request returns the original result; same key plus different request returns <code>409 IDEMPOTENCY_KEY_CONFLICT</code>.</p>
 <p>For synchronous writes, retrying with the same key returns the same created resource or <code>ledger_id</code>. For the queued variant, retrying with the same key returns the same <code>command_id</code>.</p>
+<p>Fully offline mobile usage also requires a mobile local outbox: the app must persist the draft operation and idempotency key locally before the first network attempt, then submit and reconcile it when connectivity returns.</p>
 <h3 id="global-ordered-queue">Global Ordered Queue</h3>
 <p>An optional global ordered queue variant is described in <code>04-queue.md</code>. 
-It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
+It is optional because the MVP does not require globally ordered async processing: 
+PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
 The queue variant is useful if the product wants deterministic global command ordering, but it changes API semantics to <code>202 Accepted</code>, introduces pending/rejected command states, requires worker recovery, and makes stock writes eventually consistent.</p>
 <h2 id="5-day-0-population">5. Day-0 Population</h2>
 <p>Day-0 population is mandatory because customers already have stock in vans and sites.</p>
@@ -411,7 +414,8 @@ The queue variant is useful if the product wants deterministic global command or
 <p class="source-file">02-data-model.md</p>
 <h1 id="data-model">Data Model</h1>
 <h2 id="erd">ERD</h2>
-<p>The Mermaid diagram source is kept in <code>02-erd.mmd</code>. It intentionally shows only the core stock model; supporting workflow/integration tables are listed later.</p>
+<p>The Mermaid diagram source is kept in <code>02-erd.mmd</code>. 
+It intentionally shows only the core stock model; supporting workflow/integration tables are listed later.</p>
 <h2 id="sku"><code>sku</code></h2>
 <p>Material catalogue item.</p>
 <table>
@@ -1428,6 +1432,36 @@ outbox_event  = integration event after commit
   -&gt; command becomes POSTED or REJECTED
 </code></pre>
 <p>This means the queue should be paired with mobile UI states for <code>PENDING</code>, <code>POSTED</code>, and <code>REJECTED</code> operations.</p>
+<h2 id="mobile-local-outbox">Mobile Local Outbox</h2>
+<p>The mobile local outbox is the client-side companion to the server-side queue. It handles the case where the operative is fully offline or the app crashes before the request reaches the backend.</p>
+<p>A local outbox item should contain:</p>
+<ul>
+<li><code>local_operation_id</code>: client-side UUID for the local action.</li>
+<li><code>idempotency_key</code>: generated once and reused for every retry.</li>
+<li><code>operation_type</code>: for example <code>stock-usage-record</code>.</li>
+<li><code>payload</code>: the request body to submit when online.</li>
+<li><code>local_status</code>: <code>DRAFT</code>, <code>READY_TO_SYNC</code>, <code>SUBMITTING</code>, <code>SERVER_PENDING</code>, <code>POSTED</code>, <code>REJECTED</code>, or <code>FAILED_RETRYABLE</code>.</li>
+<li><code>command_id</code>: server command UUID once accepted.</li>
+<li><code>ledger_id</code>: posted ledger UUID once the command is <code>POSTED</code>.</li>
+<li><code>rejection</code>: structured rejection details if the command is <code>REJECTED</code>.</li>
+</ul>
+<h3 id="recommended-flow">Recommended flow:</h3>
+<pre><code class="language-text">operative records stock usage offline
+  -&gt; app writes local outbox item with Idempotency-Key
+  -&gt; app submits when connectivity returns
+  -&gt; server creates stock_command and returns command_id
+  -&gt; app stores command_id and marks local item SERVER_PENDING
+  -&gt; app polls command status
+  -&gt; app marks local item POSTED or REJECTED
+</code></pre>
+<h3 id="failure-behavior">Failure behavior:</h3>
+<ul>
+<li>If the app crashes before submit, the local outbox item remains retryable.</li>
+<li>If the network drops after submit, retrying with the same <code>Idempotency-Key</code> returns the same <code>command_id</code>.</li>
+<li>If the server posts the command, the app stores <code>ledger_id</code> and marks the local item <code>POSTED</code>.</li>
+<li>If the server rejects the command, for example due to insufficient stock, the app surfaces a user-resolvable <code>REJECTED</code> state.</li>
+<li>If the same local operation is submitted twice, idempotency ensures only one server command is created.</li>
+</ul>
 <h2 id="tradeoffs">Tradeoffs</h2>
 <ul>
 <li>Stock writes become eventually consistent from the client perspective.</li>
