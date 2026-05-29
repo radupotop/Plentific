@@ -95,7 +95,7 @@ API rules:
 - Lifecycle changes use `PATCH` status transitions, not action endpoints.
 - Business conflicts return `409`.
 
-### Queue
+### Global Ordered Queue
 
 An optional global ordered queue variant is described in `04-queue.md`. 
 It is optional because the MVP does not require globally ordered async processing: PostgreSQL transactions and row locks are sufficient for the stated scale of hundreds of concurrent users and thousands of movements/day. 
