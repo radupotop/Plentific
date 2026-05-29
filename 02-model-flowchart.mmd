@@ -1,0 +1,21 @@
+flowchart LR
+    SKU["SKU<br/>Material catalogue item"]
+    STOCK_CONTAINER["STOCK_CONTAINER<br/>Real or virtual stock location"]
+    STOCK_BALANCE["STOCK_BALANCE<br/>Current physical stock projection"]
+    STOCK_LEDGER["STOCK_LEDGER<br/>Immutable movement header"]
+    STOCK_LEDGER_LINE["STOCK_LEDGER_LINE<br/>Double-entry quantity posting"]
+    STOCK_TAKE["STOCK_TAKE<br/>Physical count session"]
+    STOCK_TAKE_LINE["STOCK_TAKE_LINE<br/>Counted SKU quantity"]
+
+    SKU -->|"1 to many<br/>has balances"| STOCK_BALANCE
+    STOCK_CONTAINER -->|"1 to many<br/>contains balances"| STOCK_BALANCE
+
+    STOCK_LEDGER -->|"1 to many<br/>has lines"| STOCK_LEDGER_LINE
+    SKU -->|"1 to many<br/>moved by lines"| STOCK_LEDGER_LINE
+    STOCK_CONTAINER -->|"1 to many<br/>affected by lines"| STOCK_LEDGER_LINE
+
+    STOCK_CONTAINER -->|"1 to many<br/>audited by"| STOCK_TAKE
+    STOCK_TAKE -->|"1 to many<br/>has count lines"| STOCK_TAKE_LINE
+    SKU -->|"1 to many<br/>counted by lines"| STOCK_TAKE_LINE
+
+    STOCK_TAKE -.->|"0 or 1<br/>posts discrepancy"| STOCK_LEDGER
